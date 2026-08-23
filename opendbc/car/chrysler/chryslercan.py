@@ -72,10 +72,22 @@ def create_cruise_buttons(packer, frame, bus, cancel=False, resume=False):
   return packer.make_can_msg("CRUISE_BUTTONS", bus, values)
 
 
+def create_susw_cruise_buttons(packer, frame, bus, cancel=False, resume=False):
+  values = {
+    "ACC_CANCEL": cancel,
+    "ACC_RESUME": resume,
+    "COUNTER": frame % 0x10,
+  }
+  return packer.make_can_msg("CRUISE_BUTTONS", bus, values)
+
+
 def chrysler_checksum(address: int, sig, d: bytearray) -> int:
-  # standard CRC-8 SAE J1850 (poly 0x1D, init 0xFF, final XOR 0xFF)
+  # standard CRC-8 SAE J1850 (poly 0x1D, init 0xFF, final XOR 0xFF).
+  # Chrysler checksums protect the payload prefix before the checksum signal.
+  # Most messages put it in the final byte; SUSW CRUISE_BUTTONS has a trailing
+  # zero padding byte that is not covered by the checksum.
   crc = 0xFF
-  for i in range(len(d) - 1):
+  for i in range(sig.start_bit // 8):
     crc ^= d[i]
     crc = CRC8J1850[crc]
   return crc ^ 0xFF

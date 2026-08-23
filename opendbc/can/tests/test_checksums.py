@@ -4,6 +4,51 @@ from opendbc.can import CANPacker, CANParser
 
 
 class TestCanChecksums(unittest.TestCase):
+  def test_chrysler_susw_cruise_buttons(self):
+    """SUSW places the checksum before a trailing zero padding byte."""
+    test_messages = [
+      b"\x00\x08\x56\x00",
+      b"\x01\x07\xa1\x00",
+      b"\x08\x08\x0c\x00",
+      b"\x80\x08\x9f\x00",
+    ]
+
+    for data in test_messages:
+      parser = CANParser("chrysler_susw", [("CRUISE_BUTTONS", 0)], 0)
+      packer = CANPacker("chrysler_susw")
+      parser.update([0, [(0x2FA, data, 0)]])
+
+      with self.subTest(data=data.hex()):
+        assert parser.vl["CRUISE_BUTTONS"]["CHECKSUM"] == data[2]
+
+        values = copy.deepcopy(parser.vl["CRUISE_BUTTONS"])
+        values.pop("CHECKSUM")
+        assert packer.make_can_msg("CRUISE_BUTTONS", 0, values)[1] == data
+
+        corrupted = bytearray(data)
+        corrupted[0] ^= 0x01
+        parser.update([0, [(0x2FA, bytes(corrupted), 0)]])
+        assert parser.vl_all["CRUISE_BUTTONS"]["ACC_ON_OFF"] == []
+
+  def test_chrysler_susw_abs_3(self):
+    """Captured ABS_3 frames use the registered Chrysler checksum and counter."""
+    test_messages = [
+      b"\x6c\x20\x00\x01\x00\x08\x00\xef",
+      b"\x6c\x20\x00\x01\x08\x08\x00\xe3",
+      b"\x7c\x20\x00\x01\x18\x08\x00\x42",
+    ]
+
+    for data in test_messages:
+      parser = CANParser("chrysler_susw", [("ABS_3", 0)], 0)
+      parser.update([0, [(0xFA, data, 0)]])
+
+      with self.subTest(data=data.hex()):
+        assert parser.vl["ABS_3"]["CHECKSUM"] == data[-1]
+
+        corrupted = bytearray(data)
+        corrupted[0] ^= 0x10
+        parser.update([0, [(0xFA, bytes(corrupted), 0)]])
+        assert parser.vl_all["ABS_3"]["BRAKE_PEDAL_SWITCH"] == []
 
   def verify_checksum(self, dbc_file: str, msg_name: str, msg_addr: int, test_messages: list[bytes],
                       checksum_field: str = 'CHECKSUM', counter_field = 'COUNTER'):

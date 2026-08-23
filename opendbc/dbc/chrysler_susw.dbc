@@ -37,18 +37,18 @@ BU_: EPS ABS ENGINE BCM RADAR CAMERA XXX
 
 
 BO_ 222 EPS_1: 6 EPS
- SG_ STEERING_ANGLE : 5|14@0+ (0.1,-716.8) [0|16383] "deg" XXX
- SG_ STEERING_RATE : 19|12@0+ (0.5,-1000) [0|4095] "deg/s" XXX
+ SG_ STEERING_ANGLE : 5|14@0+ (0.1,-716.8) [-716.8|921.5] "deg" XXX
+ SG_ STEERING_RATE : 19|12@0+ (0.5,-1000) [-1000|1047.5] "deg/s" XXX
  SG_ UNKNOWN_1 : 20|1@0+ (1,0) [0|1] "" XXX
  SG_ UNKNOWN_2 : 23|1@0+ (1,0) [0|1] "" XXX
  SG_ COUNTER : 35|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 47|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 238 ABS_1: 8 ABS
- SG_ WHEEL_SPEED_FL : 7|13@0+ (0.017,0) [0|8191] "m/s" XXX
- SG_ WHEEL_SPEED_FR : 10|13@0+ (0.017,0) [0|8191] "m/s" XXX
- SG_ WHEEL_SPEED_RL : 29|13@0+ (0.017,0) [0|8191] "m/s" XXX
- SG_ WHEEL_SPEED_RR : 32|13@0+ (0.017,0) [0|8191] "m/s" XXX
+ SG_ WHEEL_SPEED_FL : 7|13@0+ (0.017,0) [0|139.247] "m/s" XXX
+ SG_ WHEEL_SPEED_FR : 10|13@0+ (0.017,0) [0|139.247] "m/s" XXX
+ SG_ WHEEL_SPEED_RL : 29|13@0+ (0.017,0) [0|139.247] "m/s" XXX
+ SG_ WHEEL_SPEED_RR : 32|13@0+ (0.017,0) [0|139.247] "m/s" XXX
  SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
@@ -56,27 +56,29 @@ BO_ 250 ABS_3: 8 ABS
  SG_ BRAKE_PRESSURE_THRESHOLD : 2|1@0+ (1,0) [0|1] "" XXX
  SG_ BRAKE_PEDAL_SWITCH : 3|1@0+ (1,0) [0|1] "" XXX
  SG_ NEW_SIGNAL_1 : 9|2@0+ (1,0) [0|3] "" XXX
- SG_ XCOUNTER : 38|4@0+ (1,0) [0|15] "" XXX
- SG_ XCHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+ SG_ COUNTER : 38|4@0+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 252 ENGINE_1: 8 ENGINE
  SG_ ENGINE_RPM : 7|14@0+ (1,0) [0|16383] "rev/min" XXX
  SG_ ACCEL_PEDAL : 20|8@0+ (0.4,0) [0|102] "percent" XXX
  SG_ REVERSE : 26|1@0+ (1,0) [0|1] "" XXX
+ SG_ UNKNOWN_3 : 39|1@0+ (1,0) [0|1] "" XXX
+ SG_ UNKNOWN_4 : 46|2@1+ (1,0) [0|3] "" XXX
  SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 254 ABS_2: 8 ABS
- SG_ LONG_ACCEL : 7|12@0+ (0.01,-20.48) [0|4095] "m/s2" XXX
- SG_ LATERAL_ACCEL : 11|12@0+ (0.01,-20.48) [0|4095] "m/s2" XXX
- SG_ YAW_RATE : 31|12@0+ (-0.0014,2.86) [0|4095] "rad/s" XXX
+ SG_ LONG_ACCEL : 7|12@0+ (0.01,-20.48) [-20.48|20.47] "m/s2" XXX
+ SG_ LATERAL_ACCEL : 11|12@0+ (0.01,-20.48) [-20.48|20.47] "m/s2" XXX
+ SG_ YAW_RATE : 31|12@0+ (-0.0014,2.86) [-2.873|2.86] "rad/s" XXX
  SG_ NEW_SIGNAL_1 : 47|9@0+ (1,0) [0|511] "" XXX
  SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 257 ABS_6: 8 ABS
  SG_ MAYBE_ACC_BRAKE : 5|1@0+ (1,0) [0|1] "" XXX
- SG_ VEHICLE_SPEED : 15|11@0+ (0.017,0) [0|2047] "m/s" XXX
+ SG_ VEHICLE_SPEED : 15|11@0+ (0.017,0) [0|34.799] "m/s" XXX
  SG_ BRAKE_PRESSURE_1 : 20|11@0+ (1,0) [0|2047] "" XXX
  SG_ BRAKE_PRESSURE_2 : 43|12@0+ (1,0) [0|4095] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
@@ -90,10 +92,10 @@ BO_ 259 ACC_STATUS_1: 8 XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 262 EPS_2: 7 EPS
- SG_ UNKNOWN_TORQUE : 7|12@0+ (1,-2000) [0|4095] "" XXX
+ SG_ UNKNOWN_TORQUE : 7|12@0+ (1,-2000) [-2000|2095] "" XXX
  SG_ UNKNOWN_1 : 8|1@0+ (1,0) [0|1] "" XXX
  SG_ UNKNOWN_STATUS : 9|1@0+ (1,0) [0|1] "" XXX
- SG_ DRIVER_TORQUE : 23|11@0+ (1,-1024) [0|2047] "" XXX
+ SG_ DRIVER_TORQUE : 23|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ UNKNOWN_2 : 27|1@0+ (1,0) [0|1] "" XXX
  SG_ LKA_STATUS : 38|2@0+ (1,0) [0|3] "" XXX
  SG_ LKA_FAULT : 39|1@0+ (1,0) [0|1] "" XXX
@@ -101,9 +103,9 @@ BO_ 262 EPS_2: 7 EPS
  SG_ CHECKSUM : 55|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 270 ABS_7: 7 ABS
- SG_ LONG_ACCEL_RAW : 7|12@0+ (0.01,-20.48) [0|4095] "" XXX
- SG_ LATERAL_ACCEL_RAW : 11|12@0+ (0.01,-20.48) [0|4095] "" XXX
- SG_ YAW_RATE_RAW : 31|12@0+ (-0.0014,2.86) [0|4095] "" XXX
+ SG_ LONG_ACCEL_RAW : 7|12@0+ (0.01,-20.48) [-20.48|20.47] "" XXX
+ SG_ LATERAL_ACCEL_RAW : 11|12@0+ (0.01,-20.48) [-20.48|20.47] "" XXX
+ SG_ YAW_RATE_RAW : 31|12@0+ (-0.0014,2.86) [-2.873|2.86] "" XXX
  SG_ COUNTER : 43|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 55|8@0+ (1,0) [0|255] "" XXX
 
@@ -130,7 +132,7 @@ BO_ 348 ACC_STATUS_2: 8 XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 502 LKAS_COMMAND: 4 CAMERA
- SG_ STEERING_TORQUE : 7|11@0+ (1,-1024) [0|2047] "" XXX
+ SG_ STEERING_TORQUE : 7|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ LKAS_CONTROL_BIT : 12|1@0+ (1,0) [0|1] "" XXX
  SG_ COUNTER : 19|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 31|8@0+ (1,0) [0|255] "" XXX
@@ -147,13 +149,13 @@ BO_ 762 CRUISE_BUTTONS: 4 BCM
  SG_ CHECKSUM : 23|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 900 LANESENSE_BUTTON: 8 BCM
- SG_ LEAD_BITS : 19|3@0+ (1,0) [0|7] "" XXX
+ SG_ UNKNOWN_BYTE2_BITS_1_3 : 19|3@0+ (1,0) [0|7] "" XXX
  SG_ LANESENSE_BUTTON : 30|1@0+ (1,0) [0|1] "" XXX
 
 BO_ 1351 LKA_HUD_2: 8 CAMERA
  SG_ LANESENSE_DISABLED : 30|1@0+ (1,0) [0|1] "" XXX
  SG_ LKA_HUD_STATE : 53|6@0+ (1,0) [0|63] "" XXX
- SG_ LKA_HANDSOFF_WARN : 55|2@0+ (1,0) [0|3] "" XXX
+ SG_ LKA_WARNING_BITS : 55|2@0+ (1,0) [0|3] "" XXX
  SG_ WARN_BYTE0 : 7|8@0+ (1,0) [0|255] "" XXX
  SG_ WARN_BYTE1 : 15|8@0+ (1,0) [0|255] "" XXX
  SG_ WARN_BYTE5 : 47|8@0+ (1,0) [0|255] "" XXX
@@ -162,7 +164,7 @@ BO_ 1850 CLOCK: 6 BCM
  SG_ HOUR_BCD : 7|8@0+ (1,0) [0|255] "" XXX
  SG_ MINUTE_BCD : 15|8@0+ (1,0) [0|255] "" XXX
 
-BO_ 1852 ACC_HUD: 8 RADAR
+BO_ 1852 ACC_HUD: 8 XXX
  SG_ ACC_SET_SPEED_KPH : 31|8@0+ (1,0) [0|255] "km/h" XXX
  SG_ ACC_SET_SPEED_MPH : 39|8@0+ (1,0) [0|255] "mph" XXX
  SG_ ACC_POPUP : 47|8@0+ (1,0) [0|255] "" XXX
@@ -171,32 +173,31 @@ BO_ 1852 ACC_HUD: 8 RADAR
  SG_ ACC_STATE : 62|3@0+ (1,0) [0|7] "" XXX
  SG_ ACC_HUD_BIT2 : 58|1@0+ (1,0) [0|1] "" XXX
 
-BO_ 1444 BSM_MAYBE: 8 XXX
- SG_ MAYBE_BSM_1 : 12|1@0+ (1,0) [0|1] "" XXX
- SG_ MAYBE_BSM_2 : 13|1@0+ (1,0) [0|1] "" XXX
+BO_ 1444 UNKNOWN_5A4: 8 XXX
+ SG_ UNKNOWN_BYTE1_BIT4 : 12|1@0+ (1,0) [0|1] "" XXX
+ SG_ UNKNOWN_BYTE1_BIT5 : 13|1@0+ (1,0) [0|1] "" XXX
 
 
 
 CM_ "2023 Jeep Renegade (FCA small-wide / SUSW platform). EPS/ABS/ENGINE/LKAS definitions carried over from fca_giorgio.dbc and chrysler_cusw.dbc where the FCA CRC-8 validates on this car; CRUISE_BUTTONS, ACC_STATUS_1/2 decoded from raw CAN C captures (see docs/susw-dbc-notes.md).";
 CM_ BO_ 259 "Raw CAN C only, 100 Hz. ACC_ENGAGED tracks stock ACC engage/resume and cancel (button or brake) exactly.";
-CM_ BO_ 348 "Raw CAN C only, 20 Hz. ACC_ENGAGED duplicates ACC_STATUS_1.";
+CM_ BO_ 348 "Raw CAN C only, 10 Hz while ACC is disengaged and 50 Hz while engaged. ACC_ENGAGED duplicates ACC_STATUS_1.";
 CM_ BO_ 502 "CH. Camera to EPS. 4 bytes on this platform (CUSW layout), not Giorgio's 8.";
-CM_ SG_ 502 LKAS_CONTROL_BIT "1 = camera has lanes and is armed to intervene (cluster car icon green); 99.8 % agreement with LKA_HUD_2 lanes-detected state on route 000000d8. Not torque-active: only 9 % of set frames carry torque, but torque never occurs without it. Flickers faster than the icon (runs down to 0.16 s) - cluster debounces.";
+CM_ SG_ 502 LKAS_CONTROL_BIT "1 = camera has lanes and is armed to intervene (cluster car icon green); 99.8 % agreement with LKA_HUD_2 lanes-detected state on route 000000d8. Not torque-active: only 9 % of set frames carry torque. Flickers faster than the icon (runs down to 0.16 s) - cluster debounces.";
 CM_ BO_ 762 "Raw CAN C only, 50 Hz, from BCM (SCCM_CRS_CTRL). 4 bytes; byte 1 = counter (low nibble) + DISTANCE_INC (bit7); byte 3 always 0. CHECKSUM = FCA CRC-8 (poly 0x1D, init 0xFF, xor 0xFF) over bytes 0-1. Bit map differs from CUSW.";
 CM_ SG_ 762 ACC_DISTANCE_DEC "gap decrease button (byte0 bit6)";
 CM_ SG_ 762 ACC_DISTANCE_INC "gap increase button (byte1 bit7)";
 CM_ SG_ 762 ACC_SET_DECEL "SET when not engaged, speed - when engaged";
 CM_ SG_ 762 ACC_ACCEL "RES+ / speed + when engaged";
-CM_ SG_ 259 ACC_SUBSTATE "toggles only while ACC_ENGAGED; meaning TBD";
+CM_ SG_ 259 ACC_SUBSTATE "1 was observed only while ACC_ENGAGED; it resets after some disengagements, including eight falling edges after ACC_ENGAGED cleared. Meaning TBD.";
 CM_ SG_ 257 MAYBE_ACC_BRAKE "may correlate with ACC-actuated braking";
 CM_ BO_ 1351 "CH, 4 Hz, camera HUD status. byte6 drives the cluster car icon: 0x02 grey (on, no lanes), 0x0c green (lanes detected, active), 0x14/0x10 yellow intervention (0x14 coincides with positive LKAS_COMMAND torque, 0x10 with the opposite side), 0xcc seen at departure warnings in route 00000003.";
 CM_ SG_ 1351 LANESENSE_DISABLED "toggled with the LaneSense button in route 00000003; 0 for all of route 000000ca where LaneSense was on throughout";
 CM_ SG_ 1351 WARN_BYTE0 "0 or 6, only during departure warnings";
 CM_ SG_ 1351 WARN_BYTE1 "0/64/128 toggling fast during departure warnings (chime/haptic pattern?)";
 CM_ SG_ 1351 WARN_BYTE5 "0 or 64, only during departure warnings";
-CM_ SG_ 1351 LKA_INTERVENTION "1 while the camera is applying corrective torque (yellow car)";
 CM_ SG_ 900 LANESENSE_BUTTON "1 while the LaneSense button is held; confirmed on route 000000d8 (8 presses incl. two 10 s holds), each followed by LKA_HUD_2.LANESENSE_DISABLED toggling";
-CM_ SG_ 900 LEAD_BITS "byte2 bits 1-3 toggle at narrated lead-vehicle appear/disappear (route 000000d8 1616-1633); meaning TBD";
+CM_ SG_ 900 UNKNOWN_BYTE2_BITS_1_3 "Former lead-vehicle candidate; 159 transitions and poor edge specificity in route 000000d8. No semantic assignment.";
 CM_ BO_ 1852 "Raw CAN C only. Sent at 1 Hz and immediately on change. Cluster ACC display. bytes 0-2 constant (0x00 0x9f 0xc0).";
 CM_ SG_ 1852 ACC_SET_SPEED_MPH "0 when no set speed; 34..40, 28..40 etc. match the narrated set speeds press for press";
 CM_ SG_ 1852 ACC_POPUP "5-second cluster popup code: 14 ACC on, 15 set/engaged, 17 cancelled, 13 seen before ACC enabled; 0 otherwise";
@@ -204,7 +205,7 @@ CM_ SG_ 1852 ACC_GAP_LEAD_BITS "byte6 bits 0-5: steps +/-1 with gap inc/dec whil
 CM_ SG_ 1852 ACC_HUD_POPUP_2 "byte6 bits 6-7 set for ~5 s after ACC events";
 CM_ SG_ 1852 ACC_STATE "0 off, 1 on/ready (after ACC on button, no set speed), 2 engaged, 5 standby after cancel (set speed retained), 3 and 4 one-frame transitions (cancel, engage)";
 CM_ BO_ 1850 "Raw CAN C only, 1 Hz. byte0 = hour, byte1 = minute, BCD, local time";
-CM_ BO_ 1444 "Raw CAN C only, 1 Hz. byte1 bits 4/5 toggle at narrated blind-spot events (route 000000d8 1355-1362, 1469-1474); candidate BSM status. 0x770 byte1 bits 1/2 also candidates.";
+CM_ BO_ 1444 "Raw CAN C only, 1 Hz. byte1 bits 4/5 remain a provisional blind-spot hypothesis: 80 transitions aligned with positive narration windows and none in the negative-control window. Isolated left/right captures are still required. The noisier 0x770 hypothesis was rejected.";
 CM_ SG_ 1351 LKA_HUD_STATE "byte6 bits 0-5, enumerated (bit-field readings do not fit all values): 2 grey car (LaneSense on, no lanes), 12 green (lanes acquired, armed), 16 yellow left departure (negative LKAS torque), 20 yellow right departure (positive torque), 12 also held during the hands-off warning (0xcc); 8/22/24/0 seen rarely, unmapped";
-CM_ SG_ 1351 LKA_HANDSOFF_WARN "byte6 bits 6-7: 3 during the lane-departure + hands-off warning (0xcc = with green state, 0xd0 = with yellow-left); 0 otherwise";
+CM_ SG_ 1351 LKA_WARNING_BITS "byte6 bits 6-7: 3 during the captured combined lane-departure + hands-off warning (0xcc with green state, 0xd0 with yellow-left); 0 otherwise. Hands-off-only behavior was not captured.";
 VAL_ 1351 LKA_HUD_STATE 2 "GREY_NO_LANES" 12 "GREEN_ARMED" 16 "YELLOW_LEFT" 20 "YELLOW_RIGHT" ;
