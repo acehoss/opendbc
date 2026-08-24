@@ -28,7 +28,9 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   TX_MSGS = [[0x1F6, 0], [0x5F0, 1]]
   STANDSTILL_THRESHOLD = 0
   RELAY_MALFUNCTION_ADDRS = {0: (0x1F6,)}
-  FWD_BLACKLISTED_ADDRS = {2: [0x1F6]}
+  # nothing is blocked statically: the stock camera's LKAS_COMMAND is only refused while openpilot
+  # is actuating, which chrysler_susw_fwd_hook() decides, see test_stock_lkas_command_forwarding
+  FWD_BLACKLISTED_ADDRS: dict[int, list[int]] = {}
   FWD_BUS_LOOKUP = {0: 2, 2: 0}
 
   MAX_RATE_UP = 5
@@ -38,14 +40,16 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   DRIVER_TORQUE_ALLOWANCE = 80
   DRIVER_TORQUE_FACTOR = 3
 
-  # (message, bus, checksum byte index or None, carries a counter, values that keep controls up)
+  # (message, address, bus, checksum byte index or None, carries a counter, values that keep
+  # controls up)
   RX_CHECKED_MSGS = (
-    ("ABS_3", 0, 7, True, {}),
-    ("ABS_6", 0, 7, True, {}),
-    ("EPS_2", 0, 6, True, {}),
-    ("ACCEL_PEDAL_DRIVER", 0, None, False, {}),
-    ("ACC_STATUS_1", GATEWAY_BUS, 7, True, {"ACC_ENGAGED": 1}),
-    ("CRUISE_BUTTONS", GATEWAY_BUS, 2, True, {}),
+    ("ABS_3", 0xFA, 0, 7, True, {}),
+    ("ABS_6", 0x101, 0, 7, True, {}),
+    ("EPS_2", 0x106, 0, 6, True, {}),
+    ("ACCEL_PEDAL_DRIVER", 0x1F0, 0, None, False, {}),
+    ("ACC_STATUS_1", 0x103, GATEWAY_BUS, 7, True, {"ACC_ENGAGED": 1}),
+    ("CRUISE_BUTTONS", 0x2FA, GATEWAY_BUS, 2, True, {}),
+    ("LKA_HUD_2", 0x547, 2, None, False, {}),
   )
 
   def setUp(self):
@@ -57,6 +61,16 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   def _pcm_status_msg(self, enable):
     values = {"ACC_ENGAGED": 1 if enable else 0}
     return self.packer.make_can_msg_safety("ACC_STATUS_1", GATEWAY_BUS, values)
+
+  def _lanesense_msg(self, disabled, bus=2):
+    # LKA_HUD_2, the camera's HUD message. LANESENSE_DISABLED is the LaneSense half of G3.
+    values = {"LANESENSE_DISABLED": 1 if disabled else 0}
+    return self.packer.make_can_msg_safety("LKA_HUD_2", bus, values)
+
+  def _engage(self):
+    """Bring panda up to the full G3 engagement state: LaneSense on and the stock ACC engaged."""
+    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
 
   def _speed_msg(self, speed):
     values = {"VEHICLE_SPEED": speed}
@@ -108,10 +122,28 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x547))
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x547))
 
-  def test_lkas_command_blocked_from_camera(self):
-    # the stock camera's LKAS_COMMAND must never reach the EPS
+  def test_stock_lkas_command_forwarding(self):
+    # G3: stock LaneSense has to keep working while openpilot is inactive, so the camera's
+    # LKAS_COMMAND reaches the EPS whenever controls are not allowed, and is refused as soon as
+    # openpilot is actuating so the two commands can never fight on the car-side bus.
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      self.assertEqual(-1 if controls_allowed else 0, self.safety.safety_fwd_hook(2, 0x1F6))
+      # openpilot's own command is never forwarded back to the camera
+      self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x1F6))
+
+  def test_stock_lkas_command_forwarding_follows_engagement(self):
+    # the same thing driven through the real engagement path rather than set_controls_allowed()
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+    self._engage()
+    self.assertTrue(self.safety.get_controls_allowed())
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
-    self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x1F6))
+
+    # LaneSense off drops controls, and the stock command is handed back to the EPS
+    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
 
   def test_gateway_bus_not_forwarded(self):
     # nothing is forwarded to or from the private fusion bus
@@ -162,6 +194,30 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertEqual(0, self._run_ramp(too_fast))
     self.assertEqual(0, self._run_ramp([-t for t in too_fast]))
 
+  def _rx_all_checked(self, lanesense=True):
+    for name, addr, bus, _, _, values in self.RX_CHECKED_MSGS:
+      if lanesense or (addr != 0x547):
+        self.assertTrue(self._rx(self.packer.make_can_msg_safety(name, bus, values)), name)
+
+  def test_lanesense_lag_drops_controls(self):
+    # LKA_HUD_2 is 4 Hz. safety_tick() refuses any check declared below 10 Hz outright, so it is
+    # declared at that floor, which leaves it on the generic 1 s lag threshold: a 250 ms message
+    # clears it with 4x margin, but a camera that goes quiet invalidates the config and drops
+    # controls even while every other checked message keeps arriving.
+    for lanesense_alive in (True, False):
+      with self.subTest(lanesense_alive=lanesense_alive):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self._rx_all_checked()
+        self.assertTrue(self._rx(self._pcm_status_msg(True)))
+        self.assertTrue(self.safety.get_controls_allowed())
+
+        self.safety.set_timer(int(1.1e6))
+        self._rx_all_checked(lanesense=lanesense_alive)
+        self.safety.safety_tick_current_safety_config()
+        self.assertEqual(lanesense_alive, self.safety.safety_config_valid())
+        self.assertEqual(lanesense_alive, self.safety.get_controls_allowed())
+
   def test_heartbeat_tx(self):
     # the gateway's opt-in for INTERCEPT: always sendable on the fusion bus, never anywhere else
     for controls_allowed in (True, False):
@@ -192,7 +248,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
 
   def test_rx_checksum_rejected(self):
     # every checksummed rx message must reject a corrupted checksum and drop controls with it
-    for name, bus, checksum_byte, _, values in self.RX_CHECKED_MSGS:
+    for name, addr, bus, checksum_byte, _, values in self.RX_CHECKED_MSGS:
       with self.subTest(msg=name):
         self._reset_safety_hooks()
         self.assertTrue(self._rx(self.packer.make_can_msg_safety(name, bus, values)))
@@ -201,10 +257,10 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
         fix = flip_byte(0 if checksum_byte is None else checksum_byte)
         bad = self.packer.make_can_msg_safety(name, bus, values, fix_checksum=fix)
         if checksum_byte is None:
-          # ACCEL_PEDAL_DRIVER carries neither a checksum nor a counter, it is a rate-only check:
-          # a garbage frame is still accepted and engagement survives it
+          # ACCEL_PEDAL_DRIVER and LKA_HUD_2 carry neither a checksum nor a counter, they are
+          # rate-only checks: a garbage frame is still accepted and engagement survives it
           self.assertTrue(self._rx(bad))
-          self.assertTrue(self._rx(make_msg(bus, 0x1F0, dat=b"\xff" * 8)))
+          self.assertTrue(self._rx(make_msg(bus, addr, dat=b"\xff" * 8)))
           self.assertTrue(self.safety.get_controls_allowed())
         else:
           self.assertFalse(self._rx(bad))
@@ -213,7 +269,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   def test_rx_counter_rejected(self):
     # every counted rx message must fail after MAX_WRONG_COUNTERS stuck counters, and the ones
     # without a counter must keep being accepted
-    for name, bus, _, has_counter, values in self.RX_CHECKED_MSGS:
+    for name, _addr, bus, _, has_counter, values in self.RX_CHECKED_MSGS:
       with self.subTest(msg=name):
         self._reset_safety_hooks()
         stuck = dict(values, COUNTER=0) if has_counter else values
@@ -225,14 +281,95 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
         self.assertEqual(not has_counter, self.safety.get_controls_allowed(), name)
 
   def test_cruise_engagement(self):
-    # engage on the rising edge of the stock ACC, disengage as soon as it drops
+    # engage on the rising edge of the stock ACC with LaneSense on, disengage as soon as it drops
     self.assertFalse(self.safety.get_controls_allowed())
-    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self._engage()
     self.assertTrue(self.safety.get_controls_allowed())
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
     self.assertTrue(self.safety.get_controls_allowed())
     self.assertTrue(self._rx(self._pcm_status_msg(False)))
     self.assertFalse(self.safety.get_controls_allowed())
+
+  # the two generic cruise tests, with the LaneSense half of G3 satisfied first
+  def test_enable_control_allowed_from_cruise(self):
+    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    super().test_enable_control_allowed_from_cruise()
+
+  def test_cruise_engaged_prev(self):
+    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    super().test_cruise_engaged_prev()
+
+  def test_no_engagement_before_lanesense_is_seen(self):
+    # fail closed: until the camera has reported LaneSense on, the stock ACC alone may not engage
+    # openpilot, no matter how long it stays engaged
+    for _ in range(10):
+      self.assertTrue(self._rx(self._pcm_status_msg(True)))
+      self.assertFalse(self.safety.get_controls_allowed())
+
+    # and it engages on the first ACC frame after LaneSense turns out to be on
+    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_no_engagement_with_lanesense_off(self):
+    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    for _ in range(10):
+      self.assertTrue(self._rx(self._pcm_status_msg(True)))
+      self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_lanesense_off_disengages(self):
+    # LaneSense switched off while the stock ACC stays engaged has to drop controls
+    self._engage()
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    # it stays down for as long as LaneSense is off
+    for _ in range(10):
+      self.assertTrue(self._rx(self._pcm_status_msg(True)))
+      self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_lanesense_back_on_reengages(self):
+    # a fresh 0 -> 1 edge of (ACC engaged and LaneSense on) re-engages, on the ACC frame
+    self._engage()
+    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_lanesense_only_from_camera_bus(self):
+    # LKA_HUD_2 is only sampled from the camera side: the same address anywhere else must not be
+    # able to satisfy the LaneSense half of G3, nor to clear it once the camera has set it
+    for bus in (0, GATEWAY_BUS, 3):
+      self._reset_safety_hooks()
+      self._rx(self._lanesense_msg(False, bus=bus))
+      self._rx(self._pcm_status_msg(True))
+      self.assertFalse(self.safety.get_controls_allowed(), f"{bus=}")
+
+    for bus in (0, GATEWAY_BUS, 3):
+      self._reset_safety_hooks()
+      self._engage()
+      self.assertTrue(self.safety.get_controls_allowed(), f"{bus=}")
+      self._rx(self._lanesense_msg(True, bus=bus))
+      self._rx(self._pcm_status_msg(True))
+      self.assertTrue(self.safety.get_controls_allowed(), f"{bus=}")
+
+  def test_lanesense_bit_position(self):
+    # LANESENSE_DISABLED is DBC 30|1@0+, byte 3 bit 6: no other bit of LKA_HUD_2 may stand in for
+    # it, and byte 3 bit 6 on its own must be enough
+    for i in range(64):
+      dat = bytearray(8)
+      dat[i // 8] = 1 << (i % 8)
+      self._reset_safety_hooks()
+      self.assertTrue(self._rx(make_msg(2, 0x547, dat=bytes(dat))))
+      self._rx(self._pcm_status_msg(True))
+      self.assertEqual(i != 30, self.safety.get_controls_allowed(), f"{i=}")
 
   def test_no_engagement_from_wrong_bus(self):
     # ACC_STATUS_1 only exists on the gateway bus, the same address on the car buses is ignored
