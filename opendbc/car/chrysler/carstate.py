@@ -37,6 +37,13 @@ SUSW_STEER_RATE_INVALID = 2095.      # deg/s, EPS_1 STEERING_RATE raw 0xfff
 # as dead. CarState runs at 100 Hz and the gateway copies 0x103 at 100 Hz, so 50 cycles is 0.5 s.
 SUSW_ACC_TIMEOUT_FRAMES = 50
 
+# ABS_6.VEHICLE_SPEED is 11 bits and tops out here. No capture goes near it, so whether it clips or
+# wraps above 125 km/h is unobserved; the ABS_1 wheel speeds are 13 bits and cannot wrap in this
+# range, so they are the fallback. The threshold is far above any observed disagreement between the
+# two (mean 0.022 m/s, p99 0.119, max 0.565 over a whole route).
+SUSW_SPEED_MAX = 34.799              # m/s, ABS_6.VEHICLE_SPEED full scale
+SUSW_SPEED_MISMATCH = 2.0            # m/s
+
 
 class CarState(CarStateBase):
   def __init__(self, CP):
@@ -52,6 +59,8 @@ class CarState(CarStateBase):
     self.susw_steering_rate = 0.
     self.susw_acc_nanos = 0
     self.susw_acc_stale_frames = 0
+    self.susw_acc_valid_prev = False
+    self.susw_needs_reengage = False
 
     if CP.carFingerprint in RAM_CARS:
       self.shifter_values = can_define.dv["Transmission_Status"]["Gear_State"]
@@ -218,7 +227,17 @@ class CarState(CarStateBase):
     ret.wheelSpeeds.fr = cp.vl["ABS_1"]["WHEEL_SPEED_FR"] * self.CP.wheelSpeedFactor
     ret.wheelSpeeds.rl = cp.vl["ABS_1"]["WHEEL_SPEED_RL"] * self.CP.wheelSpeedFactor
     ret.wheelSpeeds.rr = cp.vl["ABS_1"]["WHEEL_SPEED_RR"] * self.CP.wheelSpeedFactor
-    ret.vEgoRaw = cp.vl["ABS_6"]["VEHICLE_SPEED"]
+    # Saturation guard, not a filter: ABS_6.VEHICLE_SPEED is the speed source and is used unchanged
+    # everywhere it is plausible. It only gets overridden by the wheel-speed mean at the two ends of
+    # its 11-bit range - pinned at full scale, or reading zero - and only when the 13-bit wheel
+    # speeds disagree by more than 2 m/s. A wrap to zero at highway speed would otherwise read as
+    # standstill and drop the LKAS control bit through the minSteerSpeed branch.
+    speed = cp.vl["ABS_6"]["VEHICLE_SPEED"]
+    wheel_speed_mean = (ret.wheelSpeeds.fl + ret.wheelSpeeds.fr + ret.wheelSpeeds.rl + ret.wheelSpeeds.rr) / 4.
+    if (speed >= SUSW_SPEED_MAX - 0.05 or speed <= 0.001) and abs(speed - wheel_speed_mean) > SUSW_SPEED_MISMATCH:
+      speed = wheel_speed_mean
+
+    ret.vEgoRaw = speed
     ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
     ret.standstill = not ret.vEgoRaw > 0.001
 
@@ -267,19 +286,35 @@ class CarState(CarStateBase):
     # Counted in CarState cycles rather than against another message's timestamp, so that an
     # unhealthy bus 0 cannot freeze the reference clock and hide a dead fusion bus.
     acc_nanos = cp_fusion.ts_nanos["ACC_STATUS_1"]["ACC_ENGAGED"]
-    if acc_nanos and acc_nanos != self.susw_acc_nanos:
+    acc_fresh = bool(acc_nanos) and acc_nanos != self.susw_acc_nanos
+    if acc_fresh:
       self.susw_acc_nanos = acc_nanos
       self.susw_acc_stale_frames = 0
     else:
       self.susw_acc_stale_frames += 1
     acc_valid = bool(self.susw_acc_nanos) and self.susw_acc_stale_frames < SUSW_ACC_TIMEOUT_FRAMES
 
+    # Mirror the panda's rising-edge engagement semantics. pcm_cruise_check() only grants
+    # controls_allowed on a 0 -> 1 transition of ACC_ENGAGED, and during a fusion outage the panda
+    # stops receiving 0x103 entirely, so its cruise_engaged_prev stays latched high while its own
+    # timeout clears controls_allowed. If the bus comes back with ACC still engaged there is no
+    # rising edge for the panda and every LKAS_COMMAND would be blocked - but CarState would happily
+    # report enabled again, openpilot would re-engage on pcmCruise, and the mismatch would only
+    # surface as controlsMismatch. So: latch on the falling edge of acc_valid and stay disengaged
+    # until a fresh frame shows ACC_ENGAGED low, which is exactly when the panda's prev clears too.
+    acc_engaged = cp_fusion.vl["ACC_STATUS_1"]["ACC_ENGAGED"] == 1
+    if self.susw_acc_valid_prev and not acc_valid:
+      self.susw_needs_reengage = True
+    elif acc_fresh and not acc_engaged:
+      self.susw_needs_reengage = False
+    self.susw_acc_valid_prev = acc_valid
+
     # ACC_STATE: 0 off, 1 on/ready, 2 engaged, 5 standby after cancel. 3 and 4 are one-frame
     # transitions at cancel and engage, so anything but 0 means the stock system is available;
     # testing for (1, 2, 5) dropped availability for a frame at every engagement.
     ret.cruiseState.available = acc_valid and cp_fusion.vl["ACC_HUD"]["ACC_STATE"] != 0
-    ret.cruiseState.enabled = acc_valid and cp_fusion.vl["ACC_STATUS_1"]["ACC_ENGAGED"] == 1 and not lanesense_disabled
-    ret.cruiseState.speed = cp_fusion.vl["ACC_HUD"]["ACC_SET_SPEED_KPH"] * CV.KPH_TO_MS
+    ret.cruiseState.enabled = acc_valid and acc_engaged and not self.susw_needs_reengage and not lanesense_disabled
+    ret.cruiseState.speed = cp_fusion.vl["ACC_HUD"]["ACC_SET_SPEED_KPH"] * CV.KPH_TO_MS if acc_valid else 0.
     ret.cruiseState.nonAdaptive = False  # this car has no non-adaptive cruise mode
 
     prev_button = self.susw_button

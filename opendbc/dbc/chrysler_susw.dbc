@@ -190,7 +190,7 @@ BO_ 900 LANESENSE_BUTTON: 8 BCM
  SG_ LOW_BEAM : 31|1@0+ (1,0) [0|1] "" XXX
 
 BO_ 1046 VIN: 8 XXX
- SG_ VIN_MUX : 7|8@0+ (1,0) [0|2] "" XXX
+ SG_ VIN_MUX : 7|8@0+ (1,0) [0|255] "" XXX
  SG_ VIN_BYTE_1 : 15|8@0+ (1,0) [0|255] "" XXX
  SG_ VIN_BYTE_2 : 23|8@0+ (1,0) [0|255] "" XXX
  SG_ VIN_BYTE_3 : 31|8@0+ (1,0) [0|255] "" XXX
@@ -331,7 +331,7 @@ CM_ BO_ 400 "Raw CAN C only, 20 Hz. byte1 high nibble followed P=1, R=2, N=3, D=
 CM_ BO_ 1201 "Raw CAN C and CH, 2 Hz plus on change. Front-door sweep: byte0 bit0 = driver/front-left open; byte1 bit7 = passenger/front-right open. Rear doors were not exercised and remain undefined.";
 CM_ BO_ 1854 "Raw CAN C and CH, about 4 Hz plus on change. byte2 low two bits: 0 off, 1 right, 2 left, 3 hazards; confirmed by the isolated parked sweep in collection-run-1.";
 CM_ BO_ 1444 "Raw CAN C only, 1 Hz plus on change. Isolated traffic events in collection-run-1 confirmed byte1 bit4 = right blind spot and bit5 = left blind spot; both bits were observed simultaneously.";
-CM_ SG_ 262 TORQUE_MOTOR "EPS motor torque. During the isolated parked steering sweep it correlated 0.976 with DRIVER_TORQUE; during LKAS actuation it followed commanded torque with the expected lower scale.";
+CM_ SG_ 262 TORQUE_MOTOR "EPS motor torque. The (1,-2000) offset is measured, not assumed to be mid-scale: over 3660 parked frames of route 000000e7 with the vehicle stopped and |DRIVER_TORQUE| < 5 the raw value sits at 1999 or 2000 in 47 % of frames and within 1995-2001 in 78 %, so zero is at raw 2000. Reading it as mid-scale 2048 would put a -48 count bias into steeringTorqueEps and into any liveTorqueParameters fit. During the isolated parked steering sweep it correlated 0.976 with DRIVER_TORQUE; during LKAS actuation it followed commanded torque with the expected lower scale.";
 CM_ SG_ 262 LKA_STATUS "0 inactive, 2 armed/accepted. Value 2 agreed with LKAS_COMMAND.LKAS_CONTROL_BIT on 99.95 % of frames and was present for essentially all green/yellow HUD states in collection-run-1.";
 CM_ BO_ 1351 "CH, 4 Hz, camera HUD status. byte6 drives the cluster car icon: 0x02 grey (on, no lanes), 0x0c green (lanes detected, active), 0x14/0x10 yellow intervention (0x14 coincides with positive LKAS_COMMAND torque, 0x10 with the opposite side), 0xcc seen at departure warnings in route 00000003.";
 CM_ SG_ 1351 LANESENSE_DISABLED "toggled with the LaneSense button in route 00000003; 0 for all of route 000000ca where LaneSense was on throughout";
@@ -364,7 +364,7 @@ CM_ SG_ 1449 PARKING_BRAKE_ENGAGED "1 = electronic parking brake engaged (byte 1
 CM_ SG_ 900 PARKING_BRAKE_ENGAGED_2 "Byte 3 bit 3, 1 = electronic parking brake engaged. Agrees with GEAR_2.PARKING_BRAKE_ENGAGED on 100.000 % of route 000000e7 frames and 99.992 % of route 000000d8, duty 25.0 % / 16.0 %.";
 CM_ SG_ 900 LOW_BEAM "Byte 3 bit 7, 1 = low beams lit. Unique match over the 490 s parked baseline for the four narrated headlamp-knob actions (374.00 on, 385.75 off to parking, 391.75 on, 401.24 off in auto). It reports lamps lit, not switch position: the off->parking step produces no change anywhere, and no field on either bus follows all six knob positions. Set for only 0.60 % of route 000000e7 and 0.36 % of 000000d8, both daytime drives.";
 CM_ BO_ 241 "CAN CH only - absent from every CANsub raw-C capture and both Red Panda CAN C taps. 100 Hz, DLC 8, bytes 0, 2, 3, 4 and 5 always zero. Byte 6 low nibble is a mod-16 counter (99.996 % on route 000000e7, the deficits are single-frame logger drops) and byte 7 is the FCA CRC-8 over bytes 0-6 at 100.000 % of 352,646 frames - the only CAN CH message outside the ABS/EPS block with both, hence a candidate liveness anchor. Byte 1 reads 0x60 stopped, 0xE0 moving, 0x20 shutting down; bit 5 is always 1.";
-CM_ SG_ 241 VEHICLE_MOVING "Byte 1 bit 7. Hysteretic motion latch: sets at 1.7-2.4 m/s on pull-away and clears at 0.37-0.43 m/s on stopping, 27 edges in route 000000e7 (908.66 up ... 3508.52 down), duty 67.2 %, 13 stop events. Agreement with ABS_6.VEHICLE_SPEED > 1.5 m/s is 99.21 %, with ABS_5.VEHICLE_MOVING_1..4 98.27 %, with ABS_5.ACTIVE_FL 98.83 % - a motion flag in its own right, not a copy of any of them. 0x1f5 byte 2 bit 6 is the same state with looser debouncing. Prefer ABS_6.VEHICLE_SPEED for standstill; this is a cross-check.";
+CM_ SG_ 241 VEHICLE_MOVING "Byte 1 bit 7. Hysteretic motion latch: sets at 1.7-2.4 m/s on pull-away and clears at 0.37-0.43 m/s on stopping, 27 edges in route 000000e7 (908.66 up ... 3508.52 down), duty 67.2 %, 13 stop events. Agreement with ABS_6.VEHICLE_SPEED > 1.5 m/s is 99.21 %, with ABS_5.VEHICLE_MOVING_1..4 98.27 %, with ABS_5.ROLLING_FORWARD_1 98.83 % - a motion flag in its own right, not a copy of any of them. 0x1f5 byte 2 bit 6 is the same state with looser debouncing. Prefer ABS_6.VEHICLE_SPEED for standstill; this is a cross-check.";
 CM_ SG_ 241 IGNITION_RUN "Byte 1 bit 6. Set for the whole of every route, clears only in the last 24 frames (0.24 s) at ignition-off.";
 CM_ SG_ 348 ACC_DECEL_REQUEST "13-bit raw code in bytes 0-1 bits 7-3, LEFT AS RAW COUNTS ON PURPOSE. The idle value 1600 (bytes 0-1 = 0x3200) is a NO-REQUEST sentinel, not a physical deceleration - read this only when ACC_DECEL_ACTIVE is 1, where the observed codes are 5434-5712. Bits 9-10 of the message are constant 0 and bit 8 is ACC_DECEL_ACTIVE. A physical scale can only be given as INDICATIVE: fitting ABS_2.LONG_ACCEL at +0.30 s lag over the only 10 shallow braking episodes in 8065 s gives a pooled +0.004025 * code - 23.012 (r = +0.684, n = 1730), with per-route zero crossings at codes 5704 / 5723 / 5697 and a deepest event of -1.14 m/s2. That fit is not drive-invariant and is not declared here. The ABS deadband sits between codes 5663 and 5683 (about -0.14 to -0.22 m/s2): every episode reaching 5663 or below raised ABS_6.ACC_BRAKE_ACTIVE and the two bottoming out at 5683 and 5694 did not.";
 CM_ SG_ 348 ACC_DECEL_ACTIVE "Byte 1 bit 0, duty 0.808 % on route 000000e7. Set in exactly the frames where bytes 0-1 differ from 0x3200 (812 / 726 / 192 frames on routes 000000e7 / 000000d8 / 000000ca) and clear in every other frame. ACC_ACCEL_REQUEST is 0 in 100.00 % of those frames, so accel and decel requests are mutually exclusive.";
@@ -406,7 +406,7 @@ CM_ SG_ 1852 ACC_HUD_BIT2 "Constant 1 in all 3858 frames of route 000000e7. No i
 CM_ SG_ 222 UNKNOWN_1 "Constant 1 with zero transitions across routes 000000e7, 000000d8, 000000ca and 00000003 (1,266,470 frames). The same is true of UNKNOWN_2. No information.";
 VAL_ 250 TURN_SIGNAL_STATE 0 "OFF" 1 "RIGHT" 2 "LEFT" ;
 VAL_ 262 LKA_STATUS 0 "INACTIVE" 2 "ARMED" ;
-VAL_ 400 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" ;
+VAL_ 400 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" 6 "MANUAL" ;
 VAL_ 1351 LKA_HUD_STATE 0 "LANESENSE_OFF" 2 "GREY_NO_LANES" 12 "GREEN_ARMED" 16 "YELLOW_LEFT" 20 "YELLOW_RIGHT" ;
 VAL_ 1449 PARKING_BRAKE_TRANSITION 0 "SETTLED" 2 "APPLYING" 5 "RELEASING" ;
 VAL_ 1449 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" 6 "MANUAL" ;
