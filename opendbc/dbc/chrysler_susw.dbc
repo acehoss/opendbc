@@ -87,7 +87,10 @@ BO_ 257 ABS_6: 8 ABS
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 598 PARKING_BRAKE_STATUS: 8 XXX
- SG_ PARKING_BRAKE_RELEASED : 3|1@0+ (1,0) [0|1] "" XXX
+ SG_ PARKING_BRAKE_ENGAGED : 3|1@0+ (1,0) [0|1] "" XXX
+
+BO_ 599 SEATBELT_STATUS: 8 XXX
+ SG_ SEATBELT_DRIVER_UNLATCHED : 21|1@0+ (1,0) [0|1] "" XXX
 
 BO_ 259 ACC_STATUS_1: 8 XXX
  SG_ ACC_SUBSTATE : 18|1@0+ (1,0) [0|1] "" XXX
@@ -160,6 +163,8 @@ BO_ 762 CRUISE_BUTTONS: 4 BCM
 BO_ 900 LANESENSE_BUTTON: 8 BCM
  SG_ UNKNOWN_BYTE2_BITS_1_3 : 19|3@0+ (1,0) [0|7] "" XXX
  SG_ LANESENSE_BUTTON : 30|1@0+ (1,0) [0|1] "" XXX
+ SG_ PARKING_BRAKE_ENGAGED_2 : 27|1@0+ (1,0) [0|1] "" XXX
+ SG_ LOW_BEAM : 31|1@0+ (1,0) [0|1] "" XXX
 
 BO_ 1351 LKA_HUD_2: 8 CAMERA
  SG_ LANESENSE_DISABLED : 30|1@0+ (1,0) [0|1] "" XXX
@@ -205,6 +210,10 @@ BO_ 1444 BSM_1: 8 XXX
  SG_ RIGHT_STATUS : 12|1@0+ (1,0) [0|1] "" XXX
  SG_ LEFT_STATUS : 13|1@0+ (1,0) [0|1] "" XXX
 
+BO_ 1449 GEAR_2: 8 XXX
+ SG_ PARKING_BRAKE_ENGAGED : 15|1@0+ (1,0) [0|1] "" XXX
+ SG_ PRNDL : 23|3@0+ (1,0) [0|7] "" XXX
+
 BO_ 1854 STEERING_LEVERS: 4 BCM
  SG_ TURN_SIGNALS : 17|2@0+ (1,0) [0|3] "" XXX
 
@@ -225,7 +234,7 @@ CM_ SG_ 252 THROTTLE_VIRTUAL "Formerly ACCEL_PEDAL. This is the PCM's commanded/
 CM_ BO_ 496 "Raw CAN C and CH, ~50 Hz, no counter or checksum; bytes 2-7 always 0. Driver accelerator pedal: corr +0.9998 with THROTTLE_VIRTUAL while ACC is off, exactly 0 on all 128,528 settled ACC-engaged frames of routes 000000e7 and 000000d8, nonzero on 98.6 % of the parked pedal press (marks 134/135). Gain 0.408 %/count is fitted against THROTTLE_VIRTUAL, not pedal travel.";
 CM_ SG_ 257 MAYBE_ACC_BRAKE "may correlate with ACC-actuated braking";
 CM_ SG_ 250 TURN_SIGNAL_STATE "byte1 bits 0-1: 2 left, 1 right, 0 off. Hazards are not represented here; use STEERING_LEVERS.TURN_SIGNALS for hazards.";
-CM_ BO_ 598 "Raw CAN C only. byte0 bit3 is 1 with the electronic parking brake released and 0 while engaged; confirmed by the isolated parked on/off sweep in collection-run-1.";
+CM_ BO_ 598 "Raw CAN C only. byte0 bit3 is 1 while the electronic parking brake is ENGAGED and 0 while released - the opposite of the earlier reading. The parked sweep was ON->OFF->ON, not OFF->ON->OFF ('the parking brake is already on', 490.1 s of route 000000e7); the bit also goes 0 at drive-away (869.84 s) and 1 at the narrated 'Parking brake on' (3513.95 s), and matches the two CAN CH copies frame for frame.";
 CM_ BO_ 400 "Raw CAN C only, 20 Hz. byte1 high nibble followed P=1, R=2, N=3, D=4, P=1 exactly during the isolated parked PRNDL sweep in collection-run-1.";
 CM_ BO_ 1201 "Raw CAN C and CH, 2 Hz plus on change. Front-door sweep: byte0 bit0 = driver/front-left open; byte1 bit7 = passenger/front-right open. Rear doors were not exercised and remain undefined.";
 CM_ BO_ 1854 "Raw CAN C and CH, about 4 Hz plus on change. byte2 low two bits: 0 off, 1 right, 2 left, 3 hazards; confirmed by the isolated parked sweep in collection-run-1.";
@@ -255,10 +264,18 @@ CM_ SG_ 278 VEHICLE_MOVING_1 "Bits 36-39 were previously named FORWARD_1/REVERSE
 CM_ SG_ 278 ACTIVE_FR "Set on 99.07 % of reverse-and-moving frames and on 0.03 % of forward-and-moving frames (1609 set frames, 93.0 % inside an ENGINE_1.REVERSE window), so ACTIVE_FL/ACTIVE_FR look like a front-axle (forward, backward) rolling-direction pair rather than a per-wheel active flag. Not renamed: the per-wheel semantics are not proven, and this reports wheel rotation, not the selected gear.";
 CM_ BO_ 1520 "Private fusion bus only (comma bus 1), not a vehicle message. Sent by openpilot at 10 Hz; the RPGW gateway treats a valid frame (DLC 8, FCA CRC-8 over bytes 0-6, moving counter) as the opt-in for INTERCEPT and returns to BYPASS when it stops. ID chosen outside every address seen on fusion (0x200-0x3c0 radar slots, 0x7a9, 29-bit diagnostics) and outside the CAN C whitelist.";
 CM_ BO_ 1521 "Private fusion bus only (comma bus 1), not a vehicle message. Sent by the RPGW gateway at 5 Hz while it has heard COMMA_HEARTBEAT within the last 5 s. GATEWAY_STATE 0 = BYPASS, 1 = INTERCEPT; reason codes per board/gateway.h in panda.";
+CM_ BO_ 599 "CAN CH (comma bus 0 and 2) and raw CAN C, 10 Hz, DLC 8. Byte 2 is 0x10 with the driver belt latched and 0x30 unlatched; 0xff for the last few frames after ignition-off (invalid, not a belt state). Bytes 1 and 3 are constant 0xfe / 0x40 and byte 2 bit 4 is constantly 1 on both routes. Over the 490 s parked baseline of route 000000e7 this is the only CH bit that follows the narrated latch/unlatch/latch sequence (202.69, 212.44, 218.25 s) with no other change; raw-C 0x5a7 byte0 bit5 is an exact duplicate. Route 000000d8 independently shows unlatched 0-28.6 s, latched for the whole drive, unlatched again 3205.4 s right after shifting to P and setting the parking brake. The passenger belt is NOT represented: four isolated passenger latch/unlatch actions (236-249 s) move no bit on either bus, most likely because the seat was unoccupied.";
+CM_ SG_ 599 SEATBELT_DRIVER_UNLATCHED "1 = driver belt unlatched. Drives CarState.seatbeltUnlatched directly - it is on CAN CH, so it needs no RPGW forwarding.";
+CM_ BO_ 1449 "CAN CH only (absent from raw CAN C), 1 Hz plus on change, DLC 8. Independent CH-side gear and parking-brake report; unlike GEAR 0x190 it is visible to the comma without RPGW forwarding.";
+CM_ SG_ 1449 PRNDL "Byte 2 bits 5-7, same enum as GEAR.PRNDL on 0x190: 1 P, 2 R, 3 N, 4 D. Frame-level agreement with the raw-C 0x190 field is 99.775 % over 3550 frames of route 000000e7 (all 8 disagreements are shift transients where 0x190 momentarily reads 0). Value 6 is the manual/AutoStick gate, from the narrated park/reverse/neutral/drive/manual/drive/park sweep at 543-570 s of route 000000d8. Values 5 and 7 were never observed; bits 0-4 of byte 2 are always zero.";
+CM_ SG_ 1449 PARKING_BRAKE_ENGAGED "1 = electronic parking brake engaged (byte 1 is 0x8c engaged, 0x0c released). Edges 496.00 released / 500.18 engaged (parked marks 129 and 128, which were ON->OFF->ON: the brake was already on), 871.02 released at drive-away, 3512.74 engaged at the end of the route. Agrees with LANESENSE_BUTTON.PARKING_BRAKE_ENGAGED_2 on 100.000 % of 14127 frames.";
+CM_ SG_ 900 PARKING_BRAKE_ENGAGED_2 "Byte 3 bit 3, 1 = electronic parking brake engaged. Agrees with GEAR_2.PARKING_BRAKE_ENGAGED on 100.000 % of route 000000e7 frames and 99.992 % of route 000000d8, duty 25.0 % / 16.0 %.";
+CM_ SG_ 900 LOW_BEAM "Byte 3 bit 7, 1 = low beams lit. Unique match over the 490 s parked baseline for the four narrated headlamp-knob actions (374.00 on, 385.75 off to parking, 391.75 on, 401.24 off in auto). It reports lamps lit, not switch position: the off->parking step produces no change anywhere, and no field on either bus follows all six knob positions. Set for only 0.60 % of route 000000e7 and 0.36 % of 000000d8, both daytime drives.";
 VAL_ 250 TURN_SIGNAL_STATE 0 "OFF" 1 "RIGHT" 2 "LEFT" ;
 VAL_ 262 LKA_STATUS 0 "INACTIVE" 2 "ARMED" ;
 VAL_ 400 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" ;
 VAL_ 1351 LKA_HUD_STATE 2 "GREY_NO_LANES" 12 "GREEN_ARMED" 16 "YELLOW_LEFT" 20 "YELLOW_RIGHT" ;
+VAL_ 1449 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" 6 "MANUAL" ;
 VAL_ 1852 ACC_GAP_LEAD_STATE 6 "LEAD_GAP_1" 7 "LEAD_GAP_2" 8 "LEAD_GAP_3" 9 "LEAD_GAP_4" 10 "NO_LEAD_GAP_1" 11 "NO_LEAD_GAP_2" 12 "NO_LEAD_GAP_3" 13 "NO_LEAD_GAP_4" ;
 VAL_ 1854 TURN_SIGNALS 0 "OFF" 1 "RIGHT" 2 "LEFT" 3 "HAZARDS" ;
 VAL_ 1521 GATEWAY_STATE 0 "BYPASS" 1 "INTERCEPT" ;
