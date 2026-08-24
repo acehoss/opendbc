@@ -283,8 +283,11 @@ def _build_core_tests(catalog):
     if n <= MAX_PER_METHOD:
       method_ids[method] = [module_map[m] for m in modules]
     else:
-      step = n / MAX_PER_METHOD
-      method_ids[method] = [module_map[modules[int(i * step)]] for i in range(MAX_PER_METHOD)]
+      # spread across the whole sorted range, both endpoints included. Spacing by
+      # int(i * n / MAX_PER_METHOD) never reaches the last module, so the modules sorting
+      # last were never sampled and the branches only they exercise had no killer test.
+      step = (n - 1) / (MAX_PER_METHOD - 1)
+      method_ids[method] = [module_map[modules[int(round(i * step))]] for i in range(MAX_PER_METHOD)]
   # Round-robin: first instance of each method (by freq), then second, etc.
   # This ensures diverse early coverage with failfast.
   sorted_methods = sorted(method_freq, key=lambda m: -method_freq[m])
