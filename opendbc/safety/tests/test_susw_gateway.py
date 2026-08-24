@@ -14,8 +14,9 @@ WHITELIST_ADDRS = (0x103, 0x2FA, 0x73C)
 SAMPLE_ADDRS = (0x000, 0x103, 0x1F6, 0x2FA, 0x73C, 0x7FF)
 
 # Relay probes: body-side ECUs that must never be heard on the radar half.
-# ABS_1 from the ABS module, EPS_2 from the EPS. See modes/susw_gateway.h.
-PROBE_ADDRS = {0x0EE: 8, 0x106: 7}
+# ABS_1 from the ABS module, EPS_1 from the EPS -- both on raw CAN C, unlike
+# EPS_2 (0x106), which is CH-only and would be a dead probe. See susw_gateway.h.
+PROBE_ADDRS = {0x0EE: 8, 0x0DE: 6}
 PROBE_BUS = 2      # the bus they must NOT appear on
 PROBE_HOME_BUS = 0  # where they legitimately live
 
@@ -25,7 +26,7 @@ class TestSuswGateway(common.SafetyTest):
 
   # Nothing here is transmittable: the tx hook refuses every message. These two
   # entries exist only as .check_relay probes for a stuck-closed DG419 pair.
-  TX_MSGS = [[0x0EE, 2], [0x106, 2]]
+  TX_MSGS = [[0x0EE, 2], [0x0DE, 2]]
 
   # Transparent: everything on bus 0 goes to bus 2 and vice versa, nothing is blacklisted.
   FWD_BUS_LOOKUP = {0: 2, 2: 0}
