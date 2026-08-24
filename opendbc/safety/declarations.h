@@ -343,6 +343,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param);
 extern const safety_hooks body_hooks;
 extern const safety_hooks chrysler_hooks;
 extern const safety_hooks chrysler_cusw_hooks;
+extern const safety_hooks chrysler_susw_hooks;
 extern const safety_hooks elm327_hooks;
 extern const safety_hooks nooutput_hooks;
 extern const safety_hooks alloutput_hooks;
