@@ -6,6 +6,8 @@ legend = ["LAT_ACCEL_FACTOR", "MAX_LAT_ACCEL_MEASURED", "FRICTION"]
 "MAZDA_CX9" = "MAZDA_CX9_2021"
 
 "DODGE_DURANGO" = "CHRYSLER_PACIFICA_2020"
+# TODO: placeholder, no lateral actuation route for the Renegade yet. Closest FCA relative with real params.
+"JEEP_RENEGADE" = "JEEP_CHEROKEE_5TH_GEN"
 
 "TOYOTA_ALPHARD_TSS2" = "TOYOTA_SIENNA"
 "TOYOTA_PRIUS_V" = "TOYOTA_PRIUS"
