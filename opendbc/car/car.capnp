@@ -636,6 +636,8 @@ struct CarParams {
     fcaGiorgio @32;
     rivian @33;
     volkswagenMeb @34;
+    chryslerSusw @35;
+    suswGateway @36;  # standalone RPGW CAN C gateway (Red Panda at XY005A), not a car mode for openpilot
   }
 
   enum SteerControlType {
