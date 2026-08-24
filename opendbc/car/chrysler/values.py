@@ -81,7 +81,8 @@ class CAR(Platforms):
     [ChryslerCarDocs("Jeep Grand Cherokee 2019-21", video="https://www.youtube.com/watch?v=jBe4lWnRSu4")],
     JEEP_GRAND_CHEROKEE.specs,
   )
-  # TODO: mass/wheelbase/steerRatio are unvalidated placeholders for the FCA small-wide (SUSW) platform.
+  # FCA 2023 Renegade press kit (2023_JP_Renegade_SP.pdf): curb 3320 lb (1513 kg) 4x4 1.3T, wheelbase 101.2 in,
+  # steering overall ratio 15.7. Front/rear weight split is not published.
   # minSteerSpeed is measured: LaneSense arms at ~16.0 m/s on both captured drives (rising edges of
   # LKAS_CONTROL_BIT, min 15.86 / 16.01 m/s) and drops out at ~14.9 m/s (falling edges 14.88 / 14.91).
   JEEP_RENEGADE = ChryslerPlatformConfig(
