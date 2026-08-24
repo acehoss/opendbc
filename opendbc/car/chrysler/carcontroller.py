@@ -1,6 +1,6 @@
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL
-from opendbc.car.lateral import apply_meas_steer_torque_limits
+from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_meas_steer_torque_limits
 from opendbc.car.chrysler import chryslercan
 from opendbc.car.chrysler.values import CUSW_CARS, RAM_CARS, SUSW_CARS, CarControllerParams, ChryslerFlags
 from opendbc.car.interfaces import CarControllerBase
@@ -62,8 +62,12 @@ class CarController(CarControllerBase):
       elif self.CP.carFingerprint in RAM_CARS:
         if CS.out.vEgo < (self.CP.minSteerSpeed - 0.5):
           lkas_control_bit = False
-      elif self.CP.carFingerprint in CUSW_CARS | SUSW_CARS:
+      elif self.CP.carFingerprint in CUSW_CARS:
         if CS.out.vEgo < (self.CP.minSteerSpeed - 2.0):
+          lkas_control_bit = False
+      elif susw:
+        # stock LaneSense hysteresis: arms at ~16.0 m/s, drops out at ~14.9 m/s on both captured drives
+        if CS.out.vEgo < (self.CP.minSteerSpeed - 1.1):
           lkas_control_bit = False
 
       # EPS faults if LKAS re-enables too quickly
@@ -75,7 +79,12 @@ class CarController(CarControllerBase):
 
       # steer torque
       new_torque = int(round(CC.actuators.torque * self.params.STEER_MAX))
-      apply_torque = apply_meas_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorqueEps, self.params)
+      if susw:
+        # EPS_2.TORQUE_MOTOR is the motor's own output (~0.24x the command), not a mirror of it, so SUSW
+        # limits against the driver torque instead. See CarControllerParams and opendbc/safety.
+        apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.params)
+      else:
+        apply_torque = apply_meas_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorqueEps, self.params)
       if not lkas_active or not lkas_control_bit:
         apply_torque = 0
       self.apply_torque_last = apply_torque

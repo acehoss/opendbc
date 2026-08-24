@@ -81,10 +81,12 @@ class CAR(Platforms):
     [ChryslerCarDocs("Jeep Grand Cherokee 2019-21", video="https://www.youtube.com/watch?v=jBe4lWnRSu4")],
     JEEP_GRAND_CHEROKEE.specs,
   )
-  # TODO: mass/wheelbase/steerRatio/minSteerSpeed are unvalidated placeholders for the FCA small-wide (SUSW) platform
+  # TODO: mass/wheelbase/steerRatio are unvalidated placeholders for the FCA small-wide (SUSW) platform.
+  # minSteerSpeed is measured: LaneSense arms at ~16.0 m/s on both captured drives (rising edges of
+  # LKAS_CONTROL_BIT, min 15.86 / 16.01 m/s) and drops out at ~14.9 m/s (falling edges 14.88 / 14.91).
   JEEP_RENEGADE = ChryslerPlatformConfig(
     [ChryslerCarDocs("Jeep Renegade 2023", package="Adaptive Cruise Control (ACC) & LaneSense")],
-    ChryslerCarSpecs(mass=1509., wheelbase=2.570, steerRatio=15.7, minSteerSpeed=16.7),
+    ChryslerCarSpecs(mass=1509., wheelbase=2.570, steerRatio=15.7, minSteerSpeed=16.0),
     # Bus.pt is the camera-side powertrain bus (bus 0), Bus.adas is the private fusion bus (bus 1) that
     # a gateway populates with the three raw CAN C ACC messages. Same DBC, parsed on two buses.
     {Bus.pt: 'chrysler_susw', Bus.adas: 'chrysler_susw'},
@@ -124,12 +126,20 @@ class CarControllerParams:
       self.STEER_DELTA_DOWN = 4
       self.STEER_MAX = 250  # TODO: Some CUSW will go to 261, some not quite, exact boundaries not yet determined
     elif CP.carFingerprint in SUSW_CARS:
-      # TODO: placeholders carried over from CUSW, the SUSW EPS limits have not been probed yet.
-      # Observed stock LKAS_COMMAND torque on the Renegade spans -289..+309.
       self.STEER_STEP = 1  # 100 Hz
-      self.STEER_DELTA_UP = 4
-      self.STEER_DELTA_DOWN = 4
+      # The stock camera rate limits at exactly 6 counts per 10 ms frame in both directions and never
+      # exceeds it in 673,913 captured frames (nonzero |delta| histogram peaks hard at 6 on both drives).
+      self.STEER_DELTA_UP = 6
+      self.STEER_DELTA_DOWN = 6
+      # TODO: the stock camera reaches 383, but the EPS ceiling has not been probed. Stay conservative.
       self.STEER_MAX = 250
+      # TODO: placeholders. SUSW limits against EPS_2.DRIVER_TORQUE (TorqueDriverLimited), not the motor
+      # torque: TORQUE_MOTOR is only ~0.23-0.25x the command, so |command - TORQUE_MOTOR| reaches 397 and
+      # the stock camera's own frames would fail a TorqueMotorLimited check 36-44 % of the time.
+      # The allowance is set to STEER_THRESHOLD - 20 so limiting starts just before steeringPressed latches.
+      self.STEER_DRIVER_ALLOWANCE = 100
+      self.STEER_DRIVER_MULTIPLIER = 2
+      self.STEER_DRIVER_FACTOR = 1
     else:
       self.STEER_DELTA_UP = 3
       self.STEER_DELTA_DOWN = 3

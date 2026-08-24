@@ -1,6 +1,6 @@
 import unittest
 
-from opendbc.can import CANPacker
+from opendbc.can import CANPacker, CANParser
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
 from opendbc.car.chrysler.chryslercan import create_lkas_command
@@ -46,6 +46,15 @@ EPS_1_SENTINEL = "ffff9fff0046"          # STEERING_ANGLE raw 0x3fff, STEERING_R
 EPS_2_SATURATED = "41d300080008e8"       # DRIVER_TORQUE raw 0, the signed code minimum
 EPS_2_QUIET = "7d638168000794"           # DRIVER_TORQUE 11, TORQUE_MOTOR 6
 
+# Frames backing the DBC scale/sign corrections, all from route e7
+EPS_1_AT_REST = "1c6697d00153"           # t=100.0, stationary, STEERING_RATE raw 2000
+EPS_1_SWEEP = "20ba98fe0d68"             # t=509.2, parked sweep toward the left lock
+ABS_2_LEFT_TURN = "83689790207f8076"     # t=1752.5, steering angle +152.5 deg
+ABS_2_RIGHT_TURN = "8147946c60320747"    # t=924.5, steering angle -203.6 deg
+ABS_5_STOPPED = "0000000000000d8b"       # t=0.6, VEHICLE_SPEED 0
+ABS_5_FORWARD = "304afd21f500080f"       # t=915.0, 5.0 m/s forward
+ABS_5_REVERSE = "15130f0ffa000822"       # t=890.2, 0.5 m/s in reverse
+
 # ACC messages, raw CAN C
 ACC_OFF = "000003e80000082b"            # ACC_STATUS_1, ACC_ENGAGED = 0
 ACC_ENGAGED = "0000200200000c70"        # ACC_STATUS_1, ACC_ENGAGED = 1
@@ -88,7 +97,7 @@ class TestSuswCarState(SuswTestBase):
     self.assertAlmostEqual(CS.wheelSpeeds.rr, 15.878, places=3)
 
     self.assertAlmostEqual(CS.steeringAngleDeg, 3.8, places=3)
-    self.assertAlmostEqual(CS.steeringRateDeg, -0.5, places=3)
+    self.assertAlmostEqual(CS.steeringRateDeg, -1.0, places=3)
     self.assertEqual(CS.steeringTorque, -125)      # EPS_2.DRIVER_TORQUE
     self.assertEqual(CS.steeringTorqueEps, -9)     # EPS_2.TORQUE_MOTOR
     self.assertTrue(CS.steeringPressed)            # |125| > STEER_THRESHOLD
@@ -131,14 +140,14 @@ class TestSuswCarState(SuswTestBase):
     quiet = DRIVING | {"EPS_2": EPS_2_QUIET}
     CS = self.update(quiet)
     self.assertAlmostEqual(CS.steeringAngleDeg, 3.8, places=3)
-    self.assertAlmostEqual(CS.steeringRateDeg, -0.5, places=3)
+    self.assertAlmostEqual(CS.steeringRateDeg, -1.0, places=3)
     self.assertEqual(CS.steeringTorque, 11)
     self.assertFalse(CS.steeringPressed)
 
     # the EPS all-ones sentinel and the saturated driver torque are both discarded
     CS = self.update(quiet | {"EPS_1": EPS_1_SENTINEL, "EPS_2": EPS_2_SATURATED})
     self.assertAlmostEqual(CS.steeringAngleDeg, 3.8, places=3)
-    self.assertAlmostEqual(CS.steeringRateDeg, -0.5, places=3)
+    self.assertAlmostEqual(CS.steeringRateDeg, -1.0, places=3)
     self.assertEqual(CS.steeringTorque, 11)
     self.assertFalse(CS.steeringPressed)
 
@@ -226,13 +235,13 @@ class TestSuswLkasCommand(unittest.TestCase):
 
 
 class TestSuswCarController(SuswTestBase):
-  def _run(self, frames: int, v_ego: float, lat_active: bool = True, cancel: bool = False, resume: bool = False):
+  def _run(self, frames: int, v_ego: float, lat_active: bool = True, cancel: bool = False, resume: bool = False, torque: float = 0.5):
     CC = structs.CarControl()
     CC.enabled = True
     CC.latActive = lat_active
     CC.cruiseControl.cancel = cancel
     CC.cruiseControl.resume = resume
-    CC.actuators.torque = 0.5
+    CC.actuators.torque = torque
     CC = CC.as_reader()
 
     self.update(DRIVING, {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE})
@@ -251,18 +260,39 @@ class TestSuswCarController(SuswTestBase):
     for can_sends in sent:
       self.assertEqual([(addr, bus) for addr, _, bus in can_sends], [(0x1f6, 0)])
 
-  def test_steer_step_is_100hz(self):
-    self.assertEqual(CarControllerParams(self.CP).STEER_STEP, 1)
-    self.assertEqual(CarControllerParams(self.CP).STEER_MAX, 250)
+  def test_steer_limits(self):
+    params = CarControllerParams(self.CP)
+    self.assertEqual(params.STEER_STEP, 1)               # 100 Hz, like the stock camera
+    self.assertEqual(params.STEER_DELTA_UP, 6)           # measured stock per-frame max delta
+    self.assertEqual(params.STEER_DELTA_DOWN, 6)
+    self.assertEqual(params.STEER_MAX, 250)              # stock reaches 383, we stay conservative
+
+  def test_driver_torque_limiting(self):
+    # SUSW limits against DRIVER_TORQUE, so driver torque opposing the command clamps it
+    params = CarControllerParams(self.CP)
+    self.assertEqual(params.STEER_DRIVER_ALLOWANCE, 100)
+    self.assertEqual(params.STEER_DRIVER_MULTIPLIER, 2)
+    self.assertEqual(params.STEER_DRIVER_FACTOR, 1)
+
+    # DRIVING carries DRIVER_TORQUE = -125, so max allowed = 250 + (100 - 125) * 2 = 200
+    torques = [dat[0] << 3 | dat[1] >> 5 for can_sends in self._run(400, 20., torque=1.0) for _, dat, _ in can_sends]
+    self.assertEqual(max(t - 1024 for t in torques), 200)
 
   def test_control_bit_below_min_steer_speed(self):
-    # the control bit never comes on below minSteerSpeed, however long we drive
-    sent = self._run(400, self.CP.minSteerSpeed - 3.0)
-    self.assertTrue(all(dat[1] & 0x30 == 0 for can_sends in sent for _, dat, _ in can_sends))
+    # the control bit never comes on below the stock LaneSense drop-out speed, however long we drive
+    sent = self._run(400, self.CP.minSteerSpeed - 1.5)
+    self.assertTrue(all(dat[1] & 0x10 == 0 for can_sends in sent for _, dat, _ in can_sends))
 
-    # ...and it does come on above it, once the re-enable guard has expired
+    # ...and it does come on above minSteerSpeed, once the re-enable guard has expired
     sent = self._run(400, self.CP.minSteerSpeed + 1.0)
-    self.assertEqual(sent[-1][0][1][1] & 0x30, 0x10)
+    self.assertEqual(sent[-1][0][1][1] & 0x10, 0x10)
+
+  def test_min_steer_speed_hysteresis(self):
+    # stock arms at 16.0 m/s and drops out at 14.9 m/s: 15.5 m/s must not drop an already armed bit
+    self.assertEqual(self.CP.minSteerSpeed, 16.0)
+    self._run(300, self.CP.minSteerSpeed + 1.0)
+    self.assertTrue(all(self._control_bits(self._run(50, 15.5))))
+    self.assertFalse(any(self._control_bits(self._run(50, 14.5))))
 
   def test_reenable_guard(self):
     # EPS faults if LKAS re-enables too quickly, so the control bit is held off for 200 frames
@@ -279,6 +309,52 @@ class TestSuswCarController(SuswTestBase):
   @staticmethod
   def _control_bits(sent):
     return [bool(dat[1] & 0x10) for can_sends in sent for _, dat, _ in can_sends]
+
+
+class TestSuswDbc(unittest.TestCase):
+  """The three DBC corrections from analysis/carstate-evidence.md, checked on captured frames."""
+
+  @staticmethod
+  def _decode(name: str, addr: int, frame: str) -> dict:
+    cp = CANParser("chrysler_susw", [(name, 0)], 0)
+    cp.update([(0, [(addr, bytes.fromhex(frame), 0)])])
+    return cp.vl[name]
+
+  def test_steering_rate_scale(self):
+    # raw sits at exactly 2000 at rest, and one count is one deg/s (not the 0.5 originally declared)
+    at_rest = self._decode("EPS_1", 0xde, EPS_1_AT_REST)
+    self.assertAlmostEqual(at_rest["STEERING_RATE"], 0., places=4)
+    self.assertAlmostEqual(at_rest["STEERING_ANGLE"], 10.2, places=3)
+
+    # mid parked sweep toward the left lock: angle and rate are both positive and 1:1 with d(angle)/dt
+    sweep = self._decode("EPS_1", 0xde, EPS_1_SWEEP)
+    self.assertAlmostEqual(sweep["STEERING_RATE"], 302., places=3)
+    self.assertAlmostEqual(sweep["STEERING_ANGLE"], 121., places=3)
+
+  def test_yaw_rate_sign(self):
+    # left turn: angle, LATERAL_ACCEL and YAW_RATE must all be positive (openpilot is left-positive)
+    left = self._decode("ABS_2", 0xfe, ABS_2_LEFT_TURN)
+    self.assertGreater(left["LATERAL_ACCEL"], 0)
+    self.assertGreater(left["YAW_RATE"], 0)
+    self.assertAlmostEqual(left["YAW_RATE"], 0.3684, places=4)
+
+    right = self._decode("ABS_2", 0xfe, ABS_2_RIGHT_TURN)
+    self.assertLess(right["LATERAL_ACCEL"], 0)
+    self.assertLess(right["YAW_RATE"], 0)
+    self.assertAlmostEqual(right["YAW_RATE"], -0.4324, places=4)
+
+  def test_abs_5_moving_and_direction(self):
+    # bits 36-39 are a vehicle-moving flag, not a direction pair
+    for frame, moving in ((ABS_5_STOPPED, 0), (ABS_5_FORWARD, 1), (ABS_5_REVERSE, 1)):
+      with self.subTest(frame=frame):
+        vl = self._decode("ABS_5", 0x116, frame)
+        self.assertEqual([vl[f"VEHICLE_MOVING_{i}"] for i in range(1, 5)], [moving] * 4)
+
+    # direction lives in the ACTIVE_* bits: FL/RL forward, FR/RR backward
+    fwd = self._decode("ABS_5", 0x116, ABS_5_FORWARD)
+    self.assertEqual((fwd["ACTIVE_FL"], fwd["ACTIVE_FR"]), (1, 0))
+    rev = self._decode("ABS_5", 0x116, ABS_5_REVERSE)
+    self.assertEqual((rev["ACTIVE_FL"], rev["ACTIVE_FR"]), (0, 1))
 
 
 if __name__ == "__main__":
