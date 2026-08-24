@@ -126,17 +126,23 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
   const TorqueSteeringLimits CHRYSLER_SUSW_STEERING_LIMITS = {
     // TODO: placeholder, the stock camera peaks at 383 on the measured routes
     .max_torque = 250,
-    // measured: the stock camera rate limits at exactly 6 counts per 10 ms frame, both directions
-    .max_rate_up = 6,
+    // the stock camera rate limits at exactly 6 counts per 10 ms frame in both directions. Ramping
+    // up is held one count below that for lateral jerk headroom, since the torque cap and the
+    // steering ratio behind it are still borrowed numbers; releasing torque keeps the full 6.
+    .max_rate_up = 5,
     .max_rate_down = 6,
-    // 30 frames of max_rate_up at the 100 Hz command rate, i.e. 1.2x the 26 frames that fit in
-    // MAX_RT_INTERVAL (250 ms). At 150 a legal +6/frame ramp reaches 156 inside one window and
-    // is blocked at frame 26, which then latches: the violation zeroes desired_torque_last while
-    // openpilot keeps climbing. Same headroom pattern as the other torque modes.
+    // MAX_RT_INTERVAL is 250 ms and the window rolls on ts_elapsed > MAX_RT_INTERVAL, so 26 command
+    // frames fit one window at 100 Hz. This has to clear the fastest legal movement in either
+    // direction, 26 * max_rate_down = 156, with the ~1.2x headroom the other torque modes keep.
+    // At 150 a legal ramp was blocked at frame 26 and then latched off, because the violation
+    // zeroes desired_torque_last while openpilot keeps climbing.
     .max_rt_delta = 180,
-    // TODO: placeholders, not yet measured on this car
-    .driver_torque_allowance = 100,
-    .driver_torque_multiplier = 2,
+    // The driver takes the torque away at allowance + max_torque/multiplier = 80 + 250/3 = 163
+    // counts, ~1.36x the 120 count hands-on threshold. The worst hands-off |DRIVER_TORQUE| seen in
+    // 6740 s of driving is 87, which costs (87 - 80) * 3 = 21 counts of the 250 cap, so ordinary
+    // road noise cannot wind the assist down on its own.
+    .driver_torque_allowance = 80,
+    .driver_torque_multiplier = 3,
     // EPS_2.TORQUE_MOTOR is the motor's own output, ~0.23-0.25x the command plus ~0.12x the
     // driver, so |command - TORQUE_MOTOR| runs to 397 on stock camera frames. A motor limited
     // check would reject the stock envelope, so this is limited against the driver's torque.

@@ -15,9 +15,13 @@ ACCEL_PEDAL_DRIVER_SCALE = 0.408
 CRUISE_BUTTONS_FRAMES = (b"\x00\x08\x56\x00", b"\x08\x08\x0c\x00", b"\x80\x08\x9f\x00")
 
 
-def corrupt_checksum(msg):
-  addr, dat, bus = msg
-  return addr, dat[:-1] + bytes([dat[-1] ^ 0xFF]), bus
+def flip_byte(index):
+  def fix(msg):
+    addr, dat, bus = msg
+    dat = bytearray(dat)
+    dat[index] ^= 0xFF
+    return addr, bytes(dat), bus
+  return fix
 
 
 class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTest):
@@ -27,12 +31,22 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   FWD_BLACKLISTED_ADDRS = {2: [0x1F6]}
   FWD_BUS_LOOKUP = {0: 2, 2: 0}
 
-  MAX_RATE_UP = 6
+  MAX_RATE_UP = 5
   MAX_RATE_DOWN = 6
   MAX_TORQUE_LOOKUP = [0], [250]
   MAX_RT_DELTA = 180
-  DRIVER_TORQUE_ALLOWANCE = 100
-  DRIVER_TORQUE_FACTOR = 2
+  DRIVER_TORQUE_ALLOWANCE = 80
+  DRIVER_TORQUE_FACTOR = 3
+
+  # (message, bus, checksum byte index or None, carries a counter, values that keep controls up)
+  RX_CHECKED_MSGS = (
+    ("ABS_3", 0, 7, True, {}),
+    ("ABS_6", 0, 7, False, {}),
+    ("EPS_2", 0, 6, True, {}),
+    ("ACCEL_PEDAL_DRIVER", 0, None, False, {}),
+    ("ACC_STATUS_1", GATEWAY_BUS, 7, True, {"ACC_ENGAGED": 1}),
+    ("CRUISE_BUTTONS", GATEWAY_BUS, 2, True, {}),
+  )
 
   def setUp(self):
     self.packer = CANPackerSafety("chrysler_susw")
@@ -106,31 +120,47 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
       for bus in range(4):
         self.assertNotEqual(GATEWAY_BUS, self.safety.safety_fwd_hook(bus, addr), f"{addr=:#x} {bus=}")
 
-  def _ramp(self, step):
-    """Run a continuous ramp from 0 to MAX_TORQUE at `step` counts per 10 ms frame with a moving
-    clock, and return the index of the first blocked frame (None if none was blocked)."""
+  def _run_ramp(self, torques):
+    """Send `torques`, one per 10 ms frame with a moving clock, and return the index of the first
+    blocked frame (None if none was blocked)."""
     self._reset_safety_hooks()
     self.safety.set_controls_allowed(True)
     self._set_prev_torque(0)
     self._reset_torque_driver_measurement(0)
     blocked_at = None
-    for i in range(60):
+    for i, torque in enumerate(torques):
       self.safety.set_timer(i * 10000)  # 100 Hz command rate
-      torque = min(step * i, self.MAX_TORQUE)
       if not self._tx(self._torque_cmd_msg(torque)) and blocked_at is None:
         blocked_at = i
     return blocked_at
 
+  @staticmethod
+  def _ramp_torques(up, down, peak):
+    torques, t = [], 0
+    while t < peak:
+      t = min(t + up, peak)
+      torques.append(t)
+    while t > 0:
+      t = max(t - down, 0)
+      torques.append(t)
+    return torques
+
   def test_continuous_ramp_is_never_blocked(self):
-    # A steady +MAX_RATE_UP/frame ramp is what openpilot actually sends. 26 frames fit in
-    # MAX_RT_INTERVAL (250 ms), so max_rt_delta must clear 26 * MAX_RATE_UP = 156.
-    self.assertGreater(self.MAX_RT_DELTA, 26 * self.MAX_RATE_UP)
-    self.assertIsNone(self._ramp(self.MAX_RATE_UP))
+    # what openpilot actually sends: up at max_rate_up, back down at max_rate_down, on a moving
+    # 100 Hz clock. 26 frames fit MAX_RT_INTERVAL (250 ms), so max_rt_delta has to clear the
+    # fastest legal movement inside one window, 26 * MAX_RATE_DOWN.
+    self.assertGreater(self.MAX_RT_DELTA, 26 * self.MAX_RATE_DOWN)
+    torques = self._ramp_torques(self.MAX_RATE_UP, self.MAX_RATE_DOWN, self.MAX_TORQUE)
+    self.assertIsNone(self._run_ramp(torques))
+    self.assertIsNone(self._run_ramp([-t for t in torques]))
 
   def test_ramp_above_rate_limit_is_blocked(self):
-    # one count per frame faster than the stock camera: the per-frame rate limit catches it on the
-    # very first step, well before the real time window would
-    self.assertEqual(1, self._ramp(self.MAX_RATE_UP + 1))
+    # One count per frame over max_rate_up is refused on the very first step, in both directions.
+    # There is no descending counterpart: reducing torque is never rate limited (max_rate_down
+    # bounds how fast the upper *limit* winds down, not the command), only the RT window bounds it.
+    too_fast = self._ramp_torques(self.MAX_RATE_UP + 1, self.MAX_RATE_DOWN, self.MAX_TORQUE)
+    self.assertEqual(0, self._run_ramp(too_fast))
+    self.assertEqual(0, self._run_ramp([-t for t in too_fast]))
 
   def test_heartbeat_tx(self):
     # the gateway's opt-in for INTERCEPT: always sendable on the fusion bus, never anywhere else
@@ -160,20 +190,39 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
       self.assertFalse(self._rx(make_msg(GATEWAY_BUS, 0x2FA, dat=bytes(bad))), bad.hex())
       self.assertFalse(self.safety.get_controls_allowed())
 
-  def test_acc_status_1_checksum(self):
-    self.safety.set_controls_allowed(True)
-    msg = self.packer.make_can_msg_safety("ACC_STATUS_1", GATEWAY_BUS, {"ACC_ENGAGED": 1}, fix_checksum=corrupt_checksum)
-    self.assertFalse(self._rx(msg))
-    self.assertFalse(self.safety.get_controls_allowed())
+  def test_rx_checksum_rejected(self):
+    # every checksummed rx message must reject a corrupted checksum and drop controls with it
+    for name, bus, checksum_byte, _, values in self.RX_CHECKED_MSGS:
+      with self.subTest(msg=name):
+        self._reset_safety_hooks()
+        self.assertTrue(self._rx(self.packer.make_can_msg_safety(name, bus, values)))
 
-  def test_acc_status_1_counter(self):
-    # a stuck counter eventually invalidates the message and drops controls
-    for i in range(common.MAX_WRONG_COUNTERS + 1):
-      self.safety.set_controls_allowed(True)
-      values = {"ACC_ENGAGED": 1, "COUNTER": 0}
-      valid = self._rx(self.packer.make_can_msg_safety("ACC_STATUS_1", GATEWAY_BUS, values))
-      self.assertEqual(i < (common.MAX_WRONG_COUNTERS - 1), valid, f"{i=}")
-    self.assertFalse(self.safety.get_controls_allowed())
+        self.safety.set_controls_allowed(True)
+        fix = flip_byte(0 if checksum_byte is None else checksum_byte)
+        bad = self.packer.make_can_msg_safety(name, bus, values, fix_checksum=fix)
+        if checksum_byte is None:
+          # ACCEL_PEDAL_DRIVER carries neither a checksum nor a counter, it is a rate-only check:
+          # a garbage frame is still accepted and engagement survives it
+          self.assertTrue(self._rx(bad))
+          self.assertTrue(self._rx(make_msg(bus, 0x1F0, dat=b"\xff" * 8)))
+          self.assertTrue(self.safety.get_controls_allowed())
+        else:
+          self.assertFalse(self._rx(bad))
+          self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_rx_counter_rejected(self):
+    # every counted rx message must fail after MAX_WRONG_COUNTERS stuck counters, and the ones
+    # without a counter must keep being accepted
+    for name, bus, _, has_counter, values in self.RX_CHECKED_MSGS:
+      with self.subTest(msg=name):
+        self._reset_safety_hooks()
+        stuck = dict(values, COUNTER=0) if has_counter else values
+        for i in range(common.MAX_WRONG_COUNTERS + 1):
+          self.safety.set_controls_allowed(True)
+          valid = self._rx(self.packer.make_can_msg_safety(name, bus, dict(stuck)))
+          expected = (not has_counter) or (i < (common.MAX_WRONG_COUNTERS - 1))
+          self.assertEqual(expected, valid, f"{name} {i=}")
+        self.assertEqual(not has_counter, self.safety.get_controls_allowed(), name)
 
   def test_cruise_engagement(self):
     # engage on the rising edge of the stock ACC, disengage as soon as it drops
