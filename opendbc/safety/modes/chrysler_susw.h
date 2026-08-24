@@ -129,8 +129,12 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
     // measured: the stock camera rate limits at exactly 6 counts per 10 ms frame, both directions
     .max_rate_up = 6,
     .max_rate_down = 6,
+    // 30 frames of max_rate_up at the 100 Hz command rate, i.e. 1.2x the 26 frames that fit in
+    // MAX_RT_INTERVAL (250 ms). At 150 a legal +6/frame ramp reaches 156 inside one window and
+    // is blocked at frame 26, which then latches: the violation zeroes desired_torque_last while
+    // openpilot keeps climbing. Same headroom pattern as the other torque modes.
+    .max_rt_delta = 180,
     // TODO: placeholders, not yet measured on this car
-    .max_rt_delta = 150,
     .driver_torque_allowance = 100,
     .driver_torque_multiplier = 2,
     // EPS_2.TORQUE_MOTOR is the motor's own output, ~0.23-0.25x the command plus ~0.12x the

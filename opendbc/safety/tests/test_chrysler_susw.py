@@ -30,7 +30,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   MAX_RATE_UP = 6
   MAX_RATE_DOWN = 6
   MAX_TORQUE_LOOKUP = [0], [250]
-  MAX_RT_DELTA = 150
+  MAX_RT_DELTA = 180
   DRIVER_TORQUE_ALLOWANCE = 100
   DRIVER_TORQUE_FACTOR = 2
 
@@ -105,6 +105,32 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
       self.assertEqual(-1, self.safety.safety_fwd_hook(GATEWAY_BUS, addr), f"{addr=:#x}")
       for bus in range(4):
         self.assertNotEqual(GATEWAY_BUS, self.safety.safety_fwd_hook(bus, addr), f"{addr=:#x} {bus=}")
+
+  def _ramp(self, step):
+    """Run a continuous ramp from 0 to MAX_TORQUE at `step` counts per 10 ms frame with a moving
+    clock, and return the index of the first blocked frame (None if none was blocked)."""
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(True)
+    self._set_prev_torque(0)
+    self._reset_torque_driver_measurement(0)
+    blocked_at = None
+    for i in range(60):
+      self.safety.set_timer(i * 10000)  # 100 Hz command rate
+      torque = min(step * i, self.MAX_TORQUE)
+      if not self._tx(self._torque_cmd_msg(torque)) and blocked_at is None:
+        blocked_at = i
+    return blocked_at
+
+  def test_continuous_ramp_is_never_blocked(self):
+    # A steady +MAX_RATE_UP/frame ramp is what openpilot actually sends. 26 frames fit in
+    # MAX_RT_INTERVAL (250 ms), so max_rt_delta must clear 26 * MAX_RATE_UP = 156.
+    self.assertGreater(self.MAX_RT_DELTA, 26 * self.MAX_RATE_UP)
+    self.assertIsNone(self._ramp(self.MAX_RATE_UP))
+
+  def test_ramp_above_rate_limit_is_blocked(self):
+    # one count per frame faster than the stock camera: the per-frame rate limit catches it on the
+    # very first step, well before the real time window would
+    self.assertEqual(1, self._ramp(self.MAX_RATE_UP + 1))
 
   def test_heartbeat_tx(self):
     # the gateway's opt-in for INTERCEPT: always sendable on the fusion bus, never anywhere else
