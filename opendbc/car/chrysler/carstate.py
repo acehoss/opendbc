@@ -6,25 +6,36 @@ from opendbc.car.interfaces import CarStateBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
-# SUSW CRUISE_BUTTONS (0x2fa) is a set of independent bits, but only one is ever pressed at a time.
-# Collapse them into a single button index so create_button_events() can diff them.
+# SUSW CRUISE_BUTTONS (0x2fa) is a set of independent bits. Only one at a time was ever observed,
+# but that is not guaranteed, so they collapse into a single index in priority order for
+# create_button_events(). ACC_CANCEL is checked first: a simultaneous press must never swallow the
+# driver's cancel. No ACC_CANCEL press was captured on either long route, so it is also the least
+# proven bit in the map.
+SUSW_BUTTON_SIGNALS = ("ACC_CANCEL", "ACC_ON_OFF", "ACC_ACCEL", "ACC_SET_DECEL", "ACC_RESUME")
 SUSW_BUTTONS = {
-  1: ButtonType.mainCruise,       # ACC_ON_OFF
-  2: ButtonType.accelCruise,      # ACC_ACCEL, RES+ / speed +
-  3: ButtonType.decelCruise,      # ACC_SET_DECEL, SET / speed -
-  4: ButtonType.resumeCruise,     # ACC_RESUME
-  5: ButtonType.cancel,           # ACC_CANCEL
+  1: ButtonType.cancel,           # ACC_CANCEL
+  2: ButtonType.mainCruise,       # ACC_ON_OFF
+  3: ButtonType.accelCruise,      # ACC_ACCEL, RES+ / speed +
+  4: ButtonType.decelCruise,      # ACC_SET_DECEL, SET / speed -
+  5: ButtonType.resumeCruise,     # ACC_RESUME
   6: ButtonType.gapAdjustCruise,  # ACC_DISTANCE_DEC and ACC_DISTANCE_INC, two separate buttons on this car
 }
 
-# The SUSW EPS publishes the all-ones code extreme instead of a measurement on the first frames
-# after bus wake (EPS_1 STEERING_ANGLE raw 0x3fff, STEERING_RATE raw 0xfff), and DRIVER_TORQUE
-# saturates at its code minimum (raw 0). None of these are measurements, so hold the last valid
-# value instead. Compared with >=/<= rather than == because these are the code extremes: nothing
-# valid can reach them.
+# On bus wake the SUSW EPS publishes the all-ones code extreme instead of a measurement in the
+# first EPS_1 frames of a route (STEERING_ANGLE raw 0x3fff, STEERING_RATE raw 0xfff), so those are
+# held at the last valid value. Compared with < rather than == because they are the code extremes:
+# nothing valid can reach them.
+# EPS_2.DRIVER_TORQUE is deliberately NOT filtered. Its -1024 rail is a real saturated measurement
+# at full right lock (the parked right-to-lock sweep reads mean -394.8, min -1024, and the left
+# sweep peaks at +1022, so only the negative rail is reachable). Discarding it would hide the one
+# rail a driver can actually hit, and SUSW rate-limits the command against this signal, so a stale
+# value there means no override detection at exactly the moment the driver is fighting the wheel.
 SUSW_STEER_ANGLE_INVALID = 921.5     # deg, EPS_1 STEERING_ANGLE raw 0x3fff
 SUSW_STEER_RATE_INVALID = 2095.      # deg/s, EPS_1 STEERING_RATE raw 0xfff
-SUSW_DRIVER_TORQUE_INVALID = -1024   # EPS_2 DRIVER_TORQUE raw 0
+
+# How many CarState cycles ACC_STATUS_1 may go without a fresh frame before the fusion bus counts
+# as dead. CarState runs at 100 Hz and the gateway copies 0x103 at 100 Hz, so 50 cycles is 0.5 s.
+SUSW_ACC_TIMEOUT_FRAMES = 50
 
 
 class CarState(CarStateBase):
@@ -39,7 +50,8 @@ class CarState(CarStateBase):
     self.susw_button = 0
     self.susw_steering_angle = 0.
     self.susw_steering_rate = 0.
-    self.susw_driver_torque = 0.
+    self.susw_acc_nanos = 0
+    self.susw_acc_stale_frames = 0
 
     if CP.carFingerprint in RAM_CARS:
       self.shifter_values = can_define.dv["Transmission_Status"]["Gear_State"]
@@ -226,28 +238,47 @@ class CarState(CarStateBase):
       self.susw_steering_angle = cp.vl["EPS_1"]["STEERING_ANGLE"]
     if cp.vl["EPS_1"]["STEERING_RATE"] < SUSW_STEER_RATE_INVALID:
       self.susw_steering_rate = cp.vl["EPS_1"]["STEERING_RATE"]
-    if cp.vl["EPS_2"]["DRIVER_TORQUE"] > SUSW_DRIVER_TORQUE_INVALID:
-      self.susw_driver_torque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
 
     ret.steeringAngleDeg = self.susw_steering_angle
     ret.steeringRateDeg = self.susw_steering_rate
-    ret.steeringTorque = self.susw_driver_torque
+    ret.steeringTorque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
     ret.steeringTorqueEps = cp.vl["EPS_2"]["TORQUE_MOTOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD
     ret.steerFaultPermanent = bool(cp.vl["EPS_2"]["LKA_FAULT"])
 
-    # ACC state comes from the fusion bus. ACC_STATE: 0 off, 1 on/ready, 2 engaged, 5 standby after cancel
-    ret.cruiseState.available = cp_fusion.vl["ACC_HUD"]["ACC_STATE"] in (1, 2, 5)
     # G3: openpilot engages through the stock ACC controls, and is active only while ACC is engaged
     # AND LaneSense is on. LaneSense off (or ACC off) means openpilot is inactive and ACC/LaneSense
-    # behave exactly as stock. LANESENSE_DISABLED comes from the camera's own HUD message on bus 2.
-    lanesense_disabled = bool(cp_cam.vl["LKA_HUD_2"]["LANESENSE_DISABLED"])
-    ret.cruiseState.enabled = cp_fusion.vl["ACC_STATUS_1"]["ACC_ENGAGED"] == 1 and not lanesense_disabled
+    # behave exactly as stock. LANESENSE_DISABLED comes from the camera's own HUD message on bus 2;
+    # until the first one arrives (4 Hz, so up to 250 ms) treat LaneSense as off rather than on.
+    lanesense_disabled = not cp_cam.ts_nanos["LKA_HUD_2"]["LANESENSE_DISABLED"] or \
+                         bool(cp_cam.vl["LKA_HUD_2"]["LANESENSE_DISABLED"])
+
+    # The three ACC messages only reach bus 1 once the RPGW gateway is in INTERCEPT, which needs
+    # openpilot's heartbeat, which dashcam mode never transmits. They are registered with a nan
+    # frequency so an empty fusion bus cannot make the whole CarState canInvalid, and freshness is
+    # checked here instead: no fusion bus simply means no cruise state. That is a behavior
+    # degradation, not the safety path - the panda's own rx checks on 0x103/0x2fa drop
+    # controls_allowed within ~100 ms of the fusion bus going quiet.
+    # Counted in CarState cycles rather than against another message's timestamp, so that an
+    # unhealthy bus 0 cannot freeze the reference clock and hide a dead fusion bus.
+    acc_nanos = cp_fusion.ts_nanos["ACC_STATUS_1"]["ACC_ENGAGED"]
+    if acc_nanos and acc_nanos != self.susw_acc_nanos:
+      self.susw_acc_nanos = acc_nanos
+      self.susw_acc_stale_frames = 0
+    else:
+      self.susw_acc_stale_frames += 1
+    acc_valid = bool(self.susw_acc_nanos) and self.susw_acc_stale_frames < SUSW_ACC_TIMEOUT_FRAMES
+
+    # ACC_STATE: 0 off, 1 on/ready, 2 engaged, 5 standby after cancel. 3 and 4 are one-frame
+    # transitions at cancel and engage, so anything but 0 means the stock system is available;
+    # testing for (1, 2, 5) dropped availability for a frame at every engagement.
+    ret.cruiseState.available = acc_valid and cp_fusion.vl["ACC_HUD"]["ACC_STATE"] != 0
+    ret.cruiseState.enabled = acc_valid and cp_fusion.vl["ACC_STATUS_1"]["ACC_ENGAGED"] == 1 and not lanesense_disabled
     ret.cruiseState.speed = cp_fusion.vl["ACC_HUD"]["ACC_SET_SPEED_KPH"] * CV.KPH_TO_MS
     ret.cruiseState.nonAdaptive = False  # this car has no non-adaptive cruise mode
 
     prev_button = self.susw_button
-    self.susw_button = next((b for b, sig in enumerate(("ACC_ON_OFF", "ACC_ACCEL", "ACC_SET_DECEL", "ACC_RESUME", "ACC_CANCEL"), start=1)
+    self.susw_button = next((b for b, sig in enumerate(SUSW_BUTTON_SIGNALS, start=1)
                              if cp_fusion.vl["CRUISE_BUTTONS"][sig]), 0)
     if not self.susw_button and (cp_fusion.vl["CRUISE_BUTTONS"]["ACC_DISTANCE_DEC"] or cp_fusion.vl["CRUISE_BUTTONS"]["ACC_DISTANCE_INC"]):
       self.susw_button = 6
@@ -273,11 +304,15 @@ class CarState(CarStateBase):
         ("DOORS", 2),             # 2 Hz plus on change
         ("STEERING_LEVERS", 4),   # 4 Hz plus on change
       ]
-      # The gateway copies exactly these three raw CAN C messages onto the private fusion bus
+      # The gateway copies exactly these three raw CAN C messages onto the private fusion bus, at
+      # 100 / 50 / 1 Hz respectively. They are registered with a nan frequency, which is opendbc's
+      # "never time out" marker (CANParser.ignore_alive): the fusion bus is empty until the gateway
+      # reaches INTERCEPT, and a timeout there would pin canValid False forever. NOTE: a frequency
+      # of 0 does NOT do this - it means "learn the rate" and still times out after 10 s.
       adas_messages = [
-        ("ACC_STATUS_1", 100),
-        ("CRUISE_BUTTONS", 50),
-        ("ACC_HUD", 1),           # 1 Hz plus on change
+        ("ACC_STATUS_1", float('nan')),
+        ("CRUISE_BUTTONS", float('nan')),
+        ("ACC_HUD", float('nan')),
       ]
       return {
         Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),

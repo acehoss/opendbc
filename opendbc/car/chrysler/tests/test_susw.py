@@ -91,6 +91,7 @@ HUD_OFF = "009fc00000000104"            # ACC_HUD, ACC_STATE 0, no set speed
 HUD_READY = "009fc000000dc314"          # ACC_HUD, ACC_STATE 1, no set speed
 HUD_ENGAGED_60 = "009fc03c250fcb24"     # ACC_HUD, ACC_STATE 2, set speed 60 km/h
 HUD_STANDBY_64 = "009fc04028119154"     # ACC_HUD, ACC_STATE 5, set speed 64 km/h retained
+HUD_CANCELLING_64 = "009fc04028119134"  # ACC_HUD, ACC_STATE 3, the one-frame transition at cancel
 BTN_NONE = "00085600"
 BTN_MAIN = "010a2000"                   # ACC_ON_OFF
 BTN_RESUME = "080c7800"                 # ACC_RESUME
@@ -98,6 +99,7 @@ BTN_SET_DECEL = "10023000"              # ACC_SET_DECEL
 BTN_ACCEL = "200a1900"                  # ACC_ACCEL
 BTN_GAP_DEC = "400ef200"                # ACC_DISTANCE_DEC
 BTN_GAP_INC = "0085f100"                # ACC_DISTANCE_INC, byte 1 bit 7
+BTN_CANCEL = "80089f00"                 # ACC_CANCEL, test-drive-2 t=947.9 ("cancel with button")
 
 
 class SuswTestBase(unittest.TestCase):
@@ -209,7 +211,7 @@ class TestSuswCarState(SuswTestBase):
         CS = self.update(DRIVING | {"DOORS": doors})
         self.assertEqual(CS.doorOpen, expected)
 
-  def test_eps_sentinel_holds_last_value(self):
+  def test_eps_wake_sentinel_holds_last_angle_and_rate(self):
     quiet = DRIVING | {"EPS_2": EPS_2_QUIET}
     CS = self.update(quiet)
     self.assertAlmostEqual(CS.steeringAngleDeg, 3.8, places=3)
@@ -217,23 +219,38 @@ class TestSuswCarState(SuswTestBase):
     self.assertEqual(CS.steeringTorque, 11)
     self.assertFalse(CS.steeringPressed)
 
-    # the EPS all-ones sentinel and the saturated driver torque are both discarded
-    CS = self.update(quiet | {"EPS_1": EPS_1_SENTINEL, "EPS_2": EPS_2_SATURATED})
+    # only the EPS_1 all-ones wake artifact is discarded
+    CS = self.update(quiet | {"EPS_1": EPS_1_SENTINEL})
     self.assertAlmostEqual(CS.steeringAngleDeg, 3.8, places=3)
     self.assertAlmostEqual(CS.steeringRateDeg, -1.0, places=3)
+
+  def test_eps_wake_sentinel_on_first_frame(self):
+    # nothing valid has been seen yet, so the held angle and rate are zero
+    CS = self.update(DRIVING | {"EPS_1": EPS_1_SENTINEL})
+    self.assertEqual(CS.steeringAngleDeg, 0.)
+    self.assertEqual(CS.steeringRateDeg, 0.)
+
+  def test_saturated_driver_torque_is_a_real_measurement(self):
+    # -1024 is full right lock, not a sentinel: the parked right-to-lock sweep bottoms out there
+    # while the left sweep only reaches +1022. Filtering it would hide the driver's hardest pull.
+    CS = self.update(DRIVING | {"EPS_2": EPS_2_QUIET})
     self.assertEqual(CS.steeringTorque, 11)
     self.assertFalse(CS.steeringPressed)
 
-    # TORQUE_MOTOR is not sentinel protected, it still tracks the saturated frame
+    CS = self.update(DRIVING | {"EPS_2": EPS_2_SATURATED})
+    self.assertEqual(CS.steeringTorque, -1024)
+    self.assertTrue(CS.steeringPressed)
     self.assertEqual(CS.steeringTorqueEps, -947)
 
-  def test_eps_sentinel_on_first_frame(self):
-    # nothing valid has been seen yet, so the held values are zero and the driver is not pressing
-    CS = self.update(DRIVING | {"EPS_1": EPS_1_SENTINEL, "EPS_2": EPS_2_SATURATED})
-    self.assertEqual(CS.steeringAngleDeg, 0.)
-    self.assertEqual(CS.steeringRateDeg, 0.)
-    self.assertEqual(CS.steeringTorque, 0.)
-    self.assertFalse(CS.steeringPressed)
+    # and it is what the controller limits against, so full-left torque must not survive it
+    CC = structs.CarControl()
+    CC.enabled = True
+    CC.latActive = True
+    CC.actuators.torque = 1.0
+    self.CI.CS.out = CS
+    _, can_sends = self.CI.apply(CC.as_reader(), self.nanos)
+    torque = [(dat[0] << 3 | dat[1] >> 5) - 1024 for addr, dat, _ in can_sends if addr == 0x1f6]
+    self.assertEqual(torque, [0])
 
   def test_cruise_state(self):
     cases = (
@@ -241,11 +258,16 @@ class TestSuswCarState(SuswTestBase):
       (HUD_READY, ACC_OFF, True, False, 0.),
       (HUD_ENGAGED_60, ACC_ENGAGED, True, True, 60 / 3.6),
       (HUD_STANDBY_64, ACC_OFF, True, False, 64 / 3.6),
+      # ACC_STATE 3 and 4 are one-frame transitions at cancel and engage. They must not drop
+      # availability: ACC_HUD is 1 Hz plus on change, so the parser latches the transition value
+      # for a whole second while ACC_ENGAGED (100 Hz) already reads engaged -> wrongCarMode.
+      (HUD_CANCELLING_64, ACC_ENGAGED, True, True, 64 / 3.6),
     )
     for hud, status, available, enabled, speed in cases:
       with self.subTest(hud=hud):
         self.setUp()
-        CS = self.update(DRIVING, {"ACC_HUD": hud, "ACC_STATUS_1": status, "CRUISE_BUTTONS": BTN_NONE})
+        CS = self.update(DRIVING, {"ACC_HUD": hud, "ACC_STATUS_1": status, "CRUISE_BUTTONS": BTN_NONE},
+                         {"LKA_HUD_2": LANESENSE_ON_GREEN})
         self.assertEqual(CS.cruiseState.available, available)
         self.assertEqual(CS.cruiseState.enabled, enabled)
         self.assertAlmostEqual(CS.cruiseState.speed, speed, places=4)
@@ -272,6 +294,36 @@ class TestSuswCarState(SuswTestBase):
     CS = self.update(DRIVING, engaged | {"ACC_STATUS_1": ACC_OFF}, {"LKA_HUD_2": LANESENSE_ON_GREEN})
     self.assertFalse(CS.cruiseState.enabled)
 
+    # and before the camera has said anything at all, LaneSense counts as off, not on
+    self.setUp()
+    self.assertFalse(self.update(DRIVING, engaged).cruiseState.enabled)
+
+  def test_fusion_bus_freshness(self):
+    engaged = {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}
+    lanesense = {"LKA_HUD_2": LANESENSE_ON_GREEN}
+
+    # dashcam mode never transmits the heartbeat, so the gateway stays in BYPASS and bus 1 is empty.
+    # There must be no cruise state, and the CarState must still be valid so the port works as a
+    # dashcam: the bus 1 messages are registered with a nan frequency for exactly this reason.
+    for _ in range(200):
+      CS = self.update(DRIVING, cam=lanesense)
+    self.assertFalse(CS.cruiseState.available)
+    self.assertFalse(CS.cruiseState.enabled)
+    self.assertTrue(self.CI.can_parsers[Bus.adas].can_valid)
+
+    # once the gateway starts forwarding, cruise state appears
+    CS = self.update(DRIVING, engaged, lanesense)
+    self.assertTrue(CS.cruiseState.available)
+    self.assertTrue(CS.cruiseState.enabled)
+
+    # a fusion bus that goes quiet mid-drive drops back out after 0.5 s, and not before
+    for _ in range(49):
+      CS = self.update(DRIVING, cam=lanesense)
+    self.assertTrue(CS.cruiseState.enabled)
+    CS = self.update(DRIVING, cam=lanesense)
+    self.assertFalse(CS.cruiseState.available)
+    self.assertFalse(CS.cruiseState.enabled)
+
   def test_button_events(self):
     cases = (
       (BTN_MAIN, ButtonType.mainCruise),
@@ -292,6 +344,24 @@ class TestSuswCarState(SuswTestBase):
 
         CS = self.update(DRIVING, adas)
         self.assertEqual([(e.type, e.pressed) for e in CS.buttonEvents], [(button, False)])
+
+  def test_cancel_button_is_never_masked(self):
+    packer = CANPacker("chrysler_susw")
+    adas = {"ACC_HUD": HUD_READY, "ACC_STATUS_1": ACC_OFF, "CRUISE_BUTTONS": BTN_NONE}
+    lanesense = {"LKA_HUD_2": LANESENSE_ON_GREY}
+
+    # a real captured cancel press
+    self.update(DRIVING, adas, lanesense)
+    CS = self.update(DRIVING, adas | {"CRUISE_BUTTONS": BTN_CANCEL}, lanesense)
+    self.assertEqual([(e.type, e.pressed) for e in CS.buttonEvents], [(ButtonType.cancel, True)])
+
+    # no two-button press was ever captured, so this frame is packed rather than recorded.
+    # Cancel is checked first, so a co-pressed button cannot swallow it.
+    both = packer.make_can_msg("CRUISE_BUTTONS", 1, {"ACC_CANCEL": 1, "ACC_ACCEL": 1, "COUNTER": 3})[1]
+    self.setUp()
+    self.update(DRIVING, adas, lanesense)
+    CS = self.update(DRIVING, adas | {"CRUISE_BUTTONS": both.hex()}, lanesense)
+    self.assertEqual([(e.type, e.pressed) for e in CS.buttonEvents], [(ButtonType.cancel, True)])
 
   def test_button_counter(self):
     # the counter is used to continue the stock button sequence, it is not read from the camera bus
@@ -376,6 +446,18 @@ class TestSuswCarController(SuswTestBase):
     self.assertTrue(all(dat[0] & 0x01 for dat in heartbeats))        # OPENPILOT_ALIVE always set
     self.assertEqual([dat[6] & 0xf for dat in heartbeats], [c % 16 for c in range(30)])
 
+  def test_lat_inactive_commands_zero_torque(self):
+    # the control bit is already latched on and the command is full scale, so only latActive
+    # separates these two runs
+    self._run(300, 20.)
+    active = self._lkas(self._run(50, 20., torque=1.0))
+    self.assertTrue(all(dat[1] & 0x10 for dat in active))          # still armed
+    self.assertNotEqual(max((dat[0] << 3 | dat[1] >> 5) - 1024 for dat in active), 0)
+
+    inactive = self._lkas(self._run(50, 20., lat_active=False, torque=1.0))
+    self.assertTrue(all(dat[1] & 0x10 for dat in inactive))        # still armed
+    self.assertEqual([(dat[0] << 3 | dat[1] >> 5) - 1024 for dat in inactive], [0] * 50)
+
   def test_heartbeat_is_sent_when_inactive(self):
     # the gateway opt-in does not depend on openpilot being engaged
     sent = self._run(30, 20., lat_active=False)
@@ -410,11 +492,12 @@ class TestSuswCarController(SuswTestBase):
     self.assertTrue(self._control_bits(self._run(400, self.CP.minSteerSpeed + 1.0))[-1])
 
   def test_min_steer_speed_hysteresis(self):
-    # stock arms at 16.0 m/s and drops out at 14.9 m/s: 15.5 m/s must not drop an already armed bit
+    # stock arms at 16.0 m/s and drops out at 14.9 m/s. Probe either side of 14.9, not either side
+    # of some wider band, so that a wrong hysteresis value cannot pass.
     self.assertEqual(self.CP.minSteerSpeed, 16.0)
     self._run(300, self.CP.minSteerSpeed + 1.0)
-    self.assertTrue(all(self._control_bits(self._run(50, 15.5))))
-    self.assertFalse(any(self._control_bits(self._run(50, 14.5))))
+    self.assertTrue(all(self._control_bits(self._run(50, 15.0))))
+    self.assertFalse(any(self._control_bits(self._run(50, 14.8))))
 
   def test_reenable_guard(self):
     # EPS faults if LKAS re-enables too quickly, so the control bit is held off for 200 frames
