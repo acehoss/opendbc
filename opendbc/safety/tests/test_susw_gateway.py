@@ -13,12 +13,19 @@ WHITELIST_ADDRS = (0x103, 0x2FA, 0x73C)
 # A representative spread: the whitelist, the SUSW LKAS command, and the bus edges.
 SAMPLE_ADDRS = (0x000, 0x103, 0x1F6, 0x2FA, 0x73C, 0x7FF)
 
+# Relay probes: body-side ECUs that must never be heard on the radar half.
+# ABS_1 from the ABS module, EPS_2 from the EPS. See modes/susw_gateway.h.
+PROBE_ADDRS = {0x0EE: 8, 0x106: 7}
+PROBE_BUS = 2      # the bus they must NOT appear on
+PROBE_HOME_BUS = 0  # where they legitimately live
+
 
 class TestSuswGateway(common.SafetyTest):
   """SAFETY_SUSW_GATEWAY: transparent bidirectional CAN C gateway, no host TX, no controls."""
 
-  # The gateway never transmits anything of its own and never lets the USB host transmit.
-  TX_MSGS: list[list[int]] = []
+  # Nothing here is transmittable: the tx hook refuses every message. These two
+  # entries exist only as .check_relay probes for a stuck-closed DG419 pair.
+  TX_MSGS = [[0x0EE, 2], [0x106, 2]]
 
   # Transparent: everything on bus 0 goes to bus 2 and vice versa, nothing is blacklisted.
   FWD_BUS_LOOKUP = {0: 2, 2: 0}
@@ -110,22 +117,85 @@ class TestSuswGateway(common.SafetyTest):
         self._rx(common.make_msg(bus, addr, 8))
         self.assertFalse(self.safety.get_controls_allowed(), f"controls allowed after RX {addr=:#x} {bus=}")
 
-  def test_rx_never_sets_relay_malfunction(self):
-    # empty tx_msgs => stock_ecu_check() is never called => transparent forwarding
-    # can never latch a false relay malfunction on its own echo
+  # ***** the relay probe *****
+
+  def test_normal_traffic_never_sets_relay_malfunction(self):
+    # everything a healthy INTERCEPT actually sees, including the probe addresses
+    # on the bus they legitimately live on, must leave the flag clear
     for _ in range(10):
       for bus in (0, 1, 2):
         for addr in SAMPLE_ADDRS:
           self._rx(common.make_msg(bus, addr, 8))
-    self.assertFalse(self.safety.get_relay_malfunction())
+      for addr, length in PROBE_ADDRS.items():
+        self._rx(common.make_msg(PROBE_HOME_BUS, addr, length))
+        self._rx(common.make_msg(1, addr, length))
+    self.assertFalse(self.safety.get_relay_malfunction(), "false relay malfunction on healthy traffic")
 
-  def test_rx_checks_never_invalid(self):
+  def test_probe_on_radar_half_sets_relay_malfunction(self):
+    # a body-side frame heard on the radar half means the DG419 pair did not open
+    for addr, length in PROBE_ADDRS.items():
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)
+      self.safety.init_tests()
+      self.assertFalse(self.safety.get_relay_malfunction())
+      self._rx(common.make_msg(PROBE_BUS, addr, length))
+      self.assertTrue(self.safety.get_relay_malfunction(), f"{addr=:#x} on bus {PROBE_BUS} not detected")
+
+  def test_probe_detection_is_length_agnostic(self):
+    # stock_ecu_check() matches on addr+bus only, so a wrong-DLC impostor of a
+    # body frame on the radar half still counts as "the halves are joined"
+    for addr in PROBE_ADDRS:
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)
+      self.safety.init_tests()
+      self._rx(common.make_msg(PROBE_BUS, addr, 4))
+      self.assertTrue(self.safety.get_relay_malfunction(), f"{addr=:#x}")
+
+  def test_probe_respects_settling_time(self):
+    # stock_ecu_check() allows 1 s after a mode change before it will latch, so
+    # the relay has time to actually move
+    for addr, length in PROBE_ADDRS.items():
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)  # safety_mode_cnt = 0
+      self._rx(common.make_msg(PROBE_BUS, addr, length))
+      self.assertFalse(self.safety.get_relay_malfunction(), f"{addr=:#x} latched during settling")
+
+  def test_probes_are_still_forwarded_both_ways(self):
+    # .disable_static_blocking keeps transparency: the probe must not cost us the
+    # very forwarding it is protecting
+    for addr in PROBE_ADDRS:
+      self.assertEqual(self.safety.safety_fwd_hook(0, addr), 2, f"{addr=:#x} 0 -> 2")
+      self.assertEqual(self.safety.safety_fwd_hook(2, addr), 0, f"{addr=:#x} 2 -> 0")
+
+  def test_relay_malfunction_stops_everything(self):
+    for addr, length in PROBE_ADDRS.items():
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)
+      self.safety.init_tests()
+      self._rx(common.make_msg(PROBE_BUS, addr, length))
+      self.assertTrue(self.safety.get_relay_malfunction())
+      for bus in range(3):
+        for a in (*SAMPLE_ADDRS, *PROBE_ADDRS):
+          self.assertEqual(self.safety.safety_fwd_hook(bus, a), -1, f"still forwarding {a=:#x}")
+          self.assertFalse(self._tx(common.make_msg(bus, a, 8)))
+
+  def test_probe_addresses_are_not_transmittable(self):
+    # they are in tx_msgs, so tx_msg_safety_check() whitelists them -- but the tx
+    # hook refuses everything, so they are still blocked
+    for addr, length in PROBE_ADDRS.items():
+      for bus in range(4):
+        for ln in {length, 8, 4}:
+          self.assertFalse(self._tx(common.make_msg(bus, addr, ln)), f"allowed TX {addr=:#x} {bus=} {ln=}")
+    self.safety.set_controls_allowed(True)
+    for addr, length in PROBE_ADDRS.items():
+      self.assertFalse(self._tx(common.make_msg(PROBE_BUS, addr, length)))
+
+  def test_safety_tick_never_disables_forwarding(self):
     # no rx_checks means safety_tick() can never report a stale/missing message,
-    # so the gateway's liveness policy is entirely firmware-owned
-    for _ in range(10):
-      self.safety.set_timer(0)
+    # so the gateway's liveness policy stays entirely firmware-owned and the
+    # intercept cannot be torn down by the safety layer going quiet
+    for i in range(20):
+      self.safety.set_timer(i * 1_000_000)
       self.safety.safety_tick_current_safety_config()
-    self.assertTrue(self._rx(common.make_msg(0, 0x103, 8)))
+      self.assertEqual(self.safety.safety_fwd_hook(0, 0x103), 2)
+      self.assertEqual(self.safety.safety_fwd_hook(2, 0x103), 0)
+      self.assertFalse(self.safety.get_controls_allowed())
 
 
 if __name__ == "__main__":
