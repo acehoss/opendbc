@@ -129,17 +129,27 @@ class CarControllerParams:
     elif CP.carFingerprint in SUSW_CARS:
       self.STEER_STEP = 1  # 100 Hz
       # The stock camera rate limits at exactly 6 counts per 10 ms frame in both directions and never
-      # exceeds it in 673,913 captured frames (nonzero |delta| histogram peaks hard at 6 on both drives).
-      self.STEER_DELTA_UP = 6
+      # exceeds it in 673,913 captured frames (nonzero |delta| histogram peaks hard at 6 on both
+      # drives). We ramp up one count slower than stock and release at the stock rate.
+      # NOTE: this does NOT buy ISO lateral-jerk headroom. test_lateral_limits clips the 0.5 s ramp
+      # at full torque, and 5/250 at 100 Hz still saturates that clip, so the up-jerk stays at
+      # exactly 3.000 m/s^3 - the tolerance limit - just as it was at 6. Only STEER_DELTA_UP <= 4
+      # (2.400, the Cherokee number) actually creates margin. Revisit once real Renegade torque
+      # params replace the substituted Cherokee MAX_LAT_ACCEL_MEASURED = 1.5 this depends on.
+      self.STEER_DELTA_UP = 5
       self.STEER_DELTA_DOWN = 6
       # TODO: the stock camera reaches 383, but the EPS ceiling has not been probed. Stay conservative.
       self.STEER_MAX = 250
-      # TODO: placeholders. SUSW limits against EPS_2.DRIVER_TORQUE (TorqueDriverLimited), not the motor
-      # torque: TORQUE_MOTOR is only ~0.23-0.25x the command, so |command - TORQUE_MOTOR| reaches 397 and
-      # the stock camera's own frames would fail a TorqueMotorLimited check 36-44 % of the time.
-      # The allowance is set to STEER_THRESHOLD - 20 so limiting starts just before steeringPressed latches.
-      self.STEER_DRIVER_ALLOWANCE = 100
-      self.STEER_DRIVER_MULTIPLIER = 2
+      # SUSW limits against EPS_2.DRIVER_TORQUE (TorqueDriverLimited), not the motor torque:
+      # TORQUE_MOTOR is only ~0.23-0.25x the command, so |command - TORQUE_MOTOR| reaches 397 and the
+      # stock camera's own frames would fail a TorqueMotorLimited check 36-44 % of the time.
+      # With TorqueMotorLimited dropped this allowance is the entire override margin, so it is set
+      # below STEER_THRESHOLD = 120 rather than just under it: limiting begins at 80 driver counts,
+      # and the command is forced to zero at 250 + (80 - d) * 3 = 0, i.e. d ~= 163 counts. For
+      # scale, the captured normal-driving frame has the driver at 125 and the parked lock-to-lock
+      # sweep saturates the sensor at 1024.
+      self.STEER_DRIVER_ALLOWANCE = 80
+      self.STEER_DRIVER_MULTIPLIER = 3
       self.STEER_DRIVER_FACTOR = 1
     else:
       self.STEER_DELTA_UP = 3

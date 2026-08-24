@@ -244,7 +244,12 @@ class CarState(CarStateBase):
     ret.steeringTorque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
     ret.steeringTorqueEps = cp.vl["EPS_2"]["TORQUE_MOTOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD
-    ret.steerFaultPermanent = bool(cp.vl["EPS_2"]["LKA_FAULT"])
+    # LKA_FAULT is 0 on 100 % of 674k captured frames, so we have never seen it assert and cannot
+    # tell a recoverable fault from a latching one. steerFaultTemporary is the safer of the two:
+    # steerFaultPermanent latches steerUnavailable for the whole ignition cycle, and the fault the
+    # port actually expects (the EPS objecting to LKAS re-enabling too quickly) is recoverable.
+    # Promote to steerFaultPermanent only once a positive sample distinguishes them.
+    ret.steerFaultTemporary = bool(cp.vl["EPS_2"]["LKA_FAULT"])
 
     # G3: openpilot engages through the stock ACC controls, and is active only while ACC is engaged
     # AND LaneSense is on. LaneSense off (or ACC off) means openpilot is inactive and ACC/LaneSense
