@@ -54,6 +54,8 @@ class CarState(CarStateBase):
     self.auto_high_beam = 0
     self.button_counter = 0
     self.lkas_car_model = -1
+    # the stock camera's own LKAS_COMMAND counter, mirrored so openpilot can continue its sequence
+    self.lkas_counter = 0
     self.susw_button = 0
     self.susw_steering_angle = 0.
     self.susw_steering_rate = 0.
@@ -263,11 +265,19 @@ class CarState(CarStateBase):
     ret.steeringTorque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
     ret.steeringTorqueEps = cp.vl["EPS_2"]["TORQUE_MOTOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD
-    # LKA_FAULT is 0 on 100 % of 674k captured frames, so we have never seen it assert and cannot
-    # tell a recoverable fault from a latching one. steerFaultTemporary is the safer of the two:
-    # steerFaultPermanent latches steerUnavailable for the whole ignition cycle, and the fault the
-    # port actually expects (the EPS objecting to LKAS re-enabling too quickly) is recoverable.
-    # Promote to steerFaultPermanent only once a positive sample distinguishes them.
+    # EPS_2.LKA_FAULT -> steerFaultTemporary is an EXPLICIT DECISION MADE WITHOUT A POSITIVE SAMPLE,
+    # not an accident. The bit is 0 on 100 % of 674k captured frames across every route, so nothing in
+    # the data distinguishes a recoverable EPS objection from a latching one, and the temporary vs
+    # permanent split for this signal is UNPROVEN - quiet-lynx and velvet-moth both flagged this in
+    # their round-1 reviews, and they are right that it cannot be finalized from what we have.
+    # It stays temporary for the first drive because that is the conservative direction for a port
+    # that actuates nothing yet: steerFaultPermanent latches steerUnavailable for the whole ignition
+    # cycle, which would hide the fault behind a single alert instead of letting it re-raise every
+    # time the condition recurs, and the fault this port actually expects to meet first (the EPS
+    # objecting to LKAS re-enabling too quickly) is recoverable by construction. The cost of being
+    # wrong is bounded by dashcamOnly and by the driver-torque limits, not by this bit.
+    # Promote to steerFaultPermanent only once a bench fault sample shows the bit latching.
+    # test_lka_fault_is_temporary locks the current behavior so a change here has to be deliberate.
     ret.steerFaultTemporary = bool(cp.vl["EPS_2"]["LKA_FAULT"])
 
     # G3: openpilot engages through the stock ACC controls, and is active only while ACC is engaged
@@ -276,6 +286,10 @@ class CarState(CarStateBase):
     # until the first one arrives (4 Hz, so up to 250 ms) treat LaneSense as off rather than on.
     lanesense_disabled = not cp_cam.ts_nanos["LKA_HUD_2"]["LANESENSE_DISABLED"] or \
                          bool(cp_cam.vl["LKA_HUD_2"]["LANESENSE_DISABLED"])
+
+    # The stock camera keeps sending 0x1F6 even while the panda is blocking it, so this stays live
+    # through an engagement and the CarController can resume the counter from it at hand-over.
+    self.lkas_counter = int(cp_cam.vl["LKAS_COMMAND"]["COUNTER"])
 
     # The three ACC messages only reach bus 1 once the RPGW gateway is in INTERCEPT, which needs
     # openpilot's heartbeat, which dashcam mode never transmits. They are registered with a nan
@@ -354,10 +368,17 @@ class CarState(CarStateBase):
         ("CRUISE_BUTTONS", float('nan')),
         ("ACC_HUD", float('nan')),
       ]
+      # LKAS_COMMAND is read on bus 2 for its COUNTER only. The panda forwards the stock camera's
+      # 0x1F6 to the EPS while openpilot is inactive and blocks it while controls are allowed, so the
+      # CarController has to pick the sequence up where the camera left it - see carcontroller.py.
+      cam_messages = [
+        ("LKA_HUD_2", 4),
+        ("LKAS_COMMAND", 100),
+      ]
       return {
         Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
         # the stock camera's HUD message, the only LaneSense state openpilot can see
-        Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [("LKA_HUD_2", 4)], 2),
+        Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], cam_messages, 2),
         Bus.adas: CANParser(DBC[CP.carFingerprint][Bus.adas], adas_messages, 1),
       }
 
