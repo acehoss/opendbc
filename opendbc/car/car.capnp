@@ -648,6 +648,8 @@ struct CarParams {
     volvo @36;
     bmw @37;
     mg @38;
+    chryslerSusw @39;
+    suswGateway @40;  # standalone RPGW CAN C gateway (Red Panda at XY005A), not a car mode for openpilot
   }
 
   enum SteerControlType {
