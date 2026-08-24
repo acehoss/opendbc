@@ -64,7 +64,7 @@
 // switches failed. EPS_1 (0x0DE) is the EPS frame that is actually on this bus.
 //
 // Only the body -> bus 2 direction is probed, deliberately. The obvious
-// reverse-direction candidate is ACC_STATUS_2 (0x15C), but its sender is not
+// reverse-direction candidate is ACC_COMMAND (0x15C), but its sender is not
 // established: docs/susw-dbc-notes.md records "key-on order was not decisive
 // (0x103 appears in the same millisecond as the ABS frames)" and still lists
 // "identify the sender of 0x103/0x15c (radar vs ABS)" as open, and the

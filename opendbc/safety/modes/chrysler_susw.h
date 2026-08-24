@@ -70,7 +70,7 @@ static safety_config chrysler_susw_init(uint16_t param) {
 
   static RxCheck chrysler_susw_rx_checks[] = {
     {.msg = {{0xFAU,  0, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // ABS_3
-    {.msg = {{0x101U, 0, 8, 100U, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  // ABS_6, has no counter
+    {.msg = {{0x101U, 0, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  // ABS_6
     {.msg = {{0x106U, 0, 7, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // EPS_2
     // ACCEL_PEDAL_DRIVER carries neither a counter nor a checksum, only its rate is checked
     {.msg = {{0x1F0U, 0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
