@@ -344,6 +344,7 @@ extern const safety_hooks body_hooks;
 extern const safety_hooks chrysler_hooks;
 extern const safety_hooks chrysler_cusw_hooks;
 extern const safety_hooks chrysler_susw_hooks;
+extern const safety_hooks susw_gateway_hooks;
 extern const safety_hooks elm327_hooks;
 extern const safety_hooks nooutput_hooks;
 extern const safety_hooks alloutput_hooks;
