@@ -663,9 +663,14 @@ class TestSuswDbc(unittest.TestCase):
     # physical cornering acceleration instead of an implausibly gentle one.
     left = self._decode("ABS_2", 0xfe, ABS_2_LEFT_TURN)
     right = self._decode("ABS_2", 0xfe, ABS_2_RIGHT_TURN)
-    self.assertAlmostEqual(left["LATERAL_ACCEL"], 2.8928, places=4)
-    self.assertAlmostEqual(right["LATERAL_ACCEL"], -2.0696, places=4)
+    self.assertAlmostEqual(left["LATERAL_ACCEL"], 2.7428, places=4)
+    self.assertAlmostEqual(right["LATERAL_ACCEL"], -2.2196, places=4)
     self.assertAlmostEqual(left["LONG_ACCEL"], 1.0343, places=4)
+
+    # the lateral zero is NOT mid-scale: a joint scale-and-zero fit puts it at 2055-2057 counts on
+    # four routes on four different days, so the offset is -39.39 rather than LONG_ACCEL's -39.24.
+    # Reading it at mid-scale would carry a constant +0.15 m/s2 bias.
+    self.assertAlmostEqual(left["LATERAL_ACCEL"] - (2199 * 0.01916 - 39.24), -0.15, places=2)
 
     # a_lat = v * yaw_rate is the independent check the scale was calibrated against
     for frame, speed in ((ABS_2_LEFT_TURN, 8.5), (ABS_2_RIGHT_TURN, 4.9)):
@@ -763,18 +768,68 @@ class TestSuswDbc(unittest.TestCase):
   def test_radar_track(self):
     # the private fusion bus. 0x2c0 is the ACC lead slot.
     lead = self._decode("RADAR_TRACK_1", 0x2c0, "23f80427049050ea", bus=1)   # t=2106.6 "lead present"
-    self.assertEqual(lead["TRACK_VALID"], 1)
+    self.assertEqual(lead["TRACK_STATUS"], 1)
     self.assertEqual((lead["AZIMUTH_LO"], lead["AZIMUTH_HI"]), (-8, 39))     # straddles boresight
     self.assertAlmostEqual(lead["RANGE"], 73.0, places=2)
     self.assertLess(lead["AZIMUTH_LO"], 0)
     self.assertGreater(lead["AZIMUTH_HI"], 0)
 
     empty = self._decode("RADAR_TRACK_1", 0x2c0, "0400040000006042", bus=1)
-    self.assertEqual(empty["TRACK_VALID"], 0)
+    self.assertEqual(empty["TRACK_STATUS"], 0)
     self.assertEqual((empty["AZIMUTH_LO"], empty["AZIMUTH_HI"], empty["RANGE"]), (0, 0, 0))
 
     # the counter is in byte 6's HIGH nibble on fusion, the opposite of raw CAN C
     self.assertEqual(lead["COUNTER"], 5)
+
+  def test_track_status_is_one_hot(self):
+    # a TRACK_VALID declared on bit 5 alone missed 2-8 % of real objects: this captured frame is a
+    # genuine track at 50.4 m in state 2, which bit 5 reads as empty
+    state2 = self._decode("RADAR_TRACK_1", 0x2c0, "427202cc03260065", bus=1)
+    self.assertEqual(state2["TRACK_STATUS"], 2)
+    self.assertAlmostEqual(state2["RANGE"], 50.375, places=3)
+    self.assertEqual((state2["AZIMUTH_LO"], state2["AZIMUTH_HI"]), (-398, -308))
+    self.assertEqual(int(state2["TRACK_STATUS"]) & 1, 0)          # the old bit-5 flag would say empty
+
+  def test_lead_status_enum(self):
+    # byte0 high nibble, not a bit-7 flag: bit 7 misses the whole value-5 state
+    for frame, status in (("00000104d8005044", 0), ("500001271d00707d", 5)):
+      with self.subTest(frame=frame):
+        self.assertEqual(self._decode("RADAR_STATUS", 0x200, frame, bus=1)["LEAD_STATUS"], status)
+    define = CANDefine("chrysler_susw")
+    lead = define.dv["RADAR_STATUS"]["LEAD_STATUS"]
+    self.assertEqual((lead[0], lead[9]), ("NONE", "LEAD"))
+
+  def test_radar_track_ext(self):
+    # 0x2a0 is the other half of the same object record as 0x2c0, joined on COUNTER
+    occ = self._decode("RADAR_TRACK_1_EXT", 0x2a0, "ff05ffdc00000005", bus=1)
+    self.assertEqual(occ["TRACK_PRESENT"], 255)
+    self.assertEqual(occ["TRACK_ID"], 5)
+    self.assertEqual(occ["INV_TTC"], -1)                     # signed, positive = closing
+    self.assertEqual(occ["EXT_RESERVED"], 0)
+
+    idle = self._decode("RADAR_TRACK_1_EXT", 0x2a0, "000000740000602b", bus=1)
+    self.assertEqual((idle["TRACK_PRESENT"], idle["TRACK_ID"], idle["INV_TTC"]), (0, 0, 0))
+
+    # INV_TTC is signed: the field must reach negative values, not wrap to 255
+    self.assertLess(occ["INV_TTC"], 0)
+
+  def test_steering_levers_layouts_are_disjoint(self):
+    # the CH and raw CAN C versions of 0x73e are different messages that share one definition
+    ch = self._decode("STEERING_LEVERS", 0x73e, "00000300")               # comma bus 0, hazards
+    self.assertEqual(ch["TURN_SIGNALS"], 3)
+    self.assertEqual([ch[k] for k in ("PARK_LAMPS", "PARK_LAMPS_2", "BRAKE_LAMPS",
+                                      "TURN_LAMP_LEFT", "TURN_LAMP_RIGHT")], [0] * 5)
+
+    # raw CAN C frames: every lamp bit lives outside TURN_SIGNALS, which reads 0 there
+    for frame, lamp in (("00000400", "BRAKE_LAMPS"), ("00800000", "TURN_LAMP_LEFT"),
+                        ("00002000", "TURN_LAMP_RIGHT"), ("02008000", "PARK_LAMPS")):
+      with self.subTest(frame=frame):
+        vl = self._decode("STEERING_LEVERS", 0x73e, frame)
+        self.assertEqual(vl[lamp], 1)
+        self.assertEqual(vl["TURN_SIGNALS"], 0)
+    # PARK_LAMPS_2 is an exact duplicate of PARK_LAMPS in every captured frame
+    park = self._decode("STEERING_LEVERS", 0x73e, "02008000")
+    self.assertEqual(park["PARK_LAMPS"], park["PARK_LAMPS_2"])
 
   def test_radar_status_time_base(self):
     # bytes 3-4 ramp at 36.06 counts/s independently of speed, so it is a time base
