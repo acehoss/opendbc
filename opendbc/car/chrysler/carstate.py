@@ -23,7 +23,7 @@ SUSW_BUTTONS = {
 # value instead. Compared with >=/<= rather than == because these are the code extremes: nothing
 # valid can reach them.
 SUSW_STEER_ANGLE_INVALID = 921.5     # deg, EPS_1 STEERING_ANGLE raw 0x3fff
-SUSW_STEER_RATE_INVALID = 1047.5     # deg/s, EPS_1 STEERING_RATE raw 0xfff
+SUSW_STEER_RATE_INVALID = 2095.      # deg/s, EPS_1 STEERING_RATE raw 0xfff
 SUSW_DRIVER_TORQUE_INVALID = -1024   # EPS_2 DRIVER_TORQUE raw 0
 
 

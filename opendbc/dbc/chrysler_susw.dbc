@@ -38,7 +38,7 @@ BU_: EPS ABS ENGINE BCM RADAR CAMERA XXX
 
 BO_ 222 EPS_1: 6 EPS
  SG_ STEERING_ANGLE : 5|14@0+ (0.1,-716.8) [-716.8|921.5] "deg" XXX
- SG_ STEERING_RATE : 19|12@0+ (0.5,-1000) [-1000|1047.5] "deg/s" XXX
+ SG_ STEERING_RATE : 19|12@0+ (1,-2000) [-2000|2095] "deg/s" XXX
  SG_ UNKNOWN_1 : 20|1@0+ (1,0) [0|1] "" XXX
  SG_ UNKNOWN_2 : 23|1@0+ (1,0) [0|1] "" XXX
  SG_ COUNTER : 35|4@0+ (1,0) [0|15] "" XXX
@@ -71,7 +71,7 @@ BO_ 252 ENGINE_1: 8 ENGINE
 BO_ 254 ABS_2: 8 ABS
  SG_ LONG_ACCEL : 7|12@0+ (0.01,-20.48) [-20.48|20.47] "m/s2" XXX
  SG_ LATERAL_ACCEL : 11|12@0+ (0.01,-20.48) [-20.48|20.47] "m/s2" XXX
- SG_ YAW_RATE : 31|12@0+ (-0.0014,2.86) [-2.873|2.86] "rad/s" XXX
+ SG_ YAW_RATE : 31|12@0+ (0.0014,-2.86) [-2.86|2.873] "rad/s" XXX
  SG_ NEW_SIGNAL_1 : 47|9@0+ (1,0) [0|511] "" XXX
  SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
@@ -108,7 +108,7 @@ BO_ 262 EPS_2: 7 EPS
 BO_ 270 ABS_7: 7 ABS
  SG_ LONG_ACCEL_RAW : 7|12@0+ (0.01,-20.48) [-20.48|20.47] "" XXX
  SG_ LATERAL_ACCEL_RAW : 11|12@0+ (0.01,-20.48) [-20.48|20.47] "" XXX
- SG_ YAW_RATE_RAW : 31|12@0+ (-0.0014,2.86) [-2.873|2.86] "" XXX
+ SG_ YAW_RATE_RAW : 31|12@0+ (0.0014,-2.86) [-2.86|2.873] "" XXX
  SG_ COUNTER : 43|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 55|8@0+ (1,0) [0|255] "" XXX
 
@@ -121,10 +121,10 @@ BO_ 278 ABS_5: 8 ABS
  SG_ ACTIVE_FR : 33|1@0+ (1,0) [0|1] "" XXX
  SG_ ACTIVE_RL : 34|1@0+ (1,0) [0|1] "" XXX
  SG_ ACTIVE_RR : 35|1@0+ (1,0) [0|1] "" XXX
- SG_ FORWARD_1 : 36|1@0+ (1,0) [0|1] "" XXX
- SG_ REVERSE_1 : 37|1@0+ (1,0) [0|1] "" XXX
- SG_ FORWARD_2 : 38|1@0+ (1,0) [0|1] "" XXX
- SG_ REVERSE_2 : 39|1@0+ (1,0) [0|1] "" XXX
+ SG_ VEHICLE_MOVING_1 : 36|1@0+ (1,0) [0|1] "" XXX
+ SG_ VEHICLE_MOVING_2 : 37|1@0+ (1,0) [0|1] "" XXX
+ SG_ VEHICLE_MOVING_3 : 38|1@0+ (1,0) [0|1] "" XXX
+ SG_ VEHICLE_MOVING_4 : 39|1@0+ (1,0) [0|1] "" XXX
  SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
@@ -228,6 +228,11 @@ CM_ SG_ 1852 ACC_STATE "0 off, 1 on/ready (after ACC on button, no set speed), 2
 CM_ BO_ 1850 "Raw CAN C only, 1 Hz. byte0 = hour, byte1 = minute, BCD, local time";
 CM_ SG_ 1351 LKA_HUD_STATE "byte6 bits 0-5, enumerated (bit-field readings do not fit all values): 2 grey car (LaneSense on, no lanes), 12 green (lanes acquired, armed), 16 yellow left departure (negative LKAS torque), 20 yellow right departure (positive torque), 12 also held during the hands-off warning (0xcc); 8/22/24/0 seen rarely, unmapped";
 CM_ SG_ 1351 LKA_WARNING_BITS "byte6 bits 6-7: 3 during the captured combined lane-departure + hands-off warning (0xcc with green state, 0xd0 with yellow-left); 0 otherwise. Hands-off-only behavior was not captured.";
+CM_ SG_ 222 STEERING_RATE "1 count = 1 deg/s, not 0.5: the raw value rests at exactly 2000 and fits raw = 1.01*d(STEERING_ANGLE)/dt + 2000 (route e7 n=54314 slope 1.012 intercept 2000.1, route d8 n=54872 slope 1.025 intercept 1999.8). Correlation with the differentiated angle 0.988 / 0.980, median residual 0.053 deg/s. Corrected peaks -436..+394 deg/s.";
+CM_ SG_ 254 YAW_RATE "Left-positive, same convention as STEERING_ANGLE and LATERAL_ACCEL. With the previously declared negative factor the value correlated -0.972 (e7, n=225k above 5 m/s) / -0.976 (d8) with the steering angle and went negative in every narrated left turn, while LATERAL_ACCEL went positive. The positive factor makes all three agree; the resulting gain yaw ~= 3.7e-4 * angle * speed implies an effective steering ratio near 18, plausible for a 2.57 m wheelbase.";
+CM_ SG_ 270 YAW_RATE_RAW "Same sign correction as ABS_2.YAW_RATE, see the comment there.";
+CM_ SG_ 278 VEHICLE_MOVING_1 "Bits 36-39 were previously named FORWARD_1/REVERSE_1/FORWARD_2/REVERSE_2. They are not direction: all four carry the same 68.9 % duty and agree with ABS_6.VEHICLE_SPEED > 0 on 99.76 % of frames, so they are a vehicle-moving flag. Direction lives in the ACTIVE_* bits.";
+CM_ SG_ 278 ACTIVE_FR "Set on 99.07 % of reverse-and-moving frames and on 0.03 % of forward-and-moving frames (1609 set frames, 93.0 % inside an ENGINE_1.REVERSE window), so ACTIVE_FL/ACTIVE_FR look like a front-axle (forward, backward) rolling-direction pair rather than a per-wheel active flag. Not renamed: the per-wheel semantics are not proven, and this reports wheel rotation, not the selected gear.";
 VAL_ 250 TURN_SIGNAL_STATE 0 "OFF" 1 "RIGHT" 2 "LEFT" ;
 VAL_ 262 LKA_STATUS 0 "INACTIVE" 2 "ARMED" ;
 VAL_ 400 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" ;
