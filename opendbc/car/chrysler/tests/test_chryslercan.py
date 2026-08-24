@@ -15,8 +15,11 @@ class TestChryslerCan(unittest.TestCase):
   def test_susw_body_signal_placement(self):
     packer = CANPacker("chrysler_susw")
 
+    # GEAR carries a counter in byte 6 and a checksum in byte 7, so only bytes 0-5 are fixed
     for gear, raw in enumerate((0x10, 0x20, 0x30, 0x40), start=1):
-      assert packer.make_can_msg("GEAR", 0, {"PRNDL": gear})[1] == bytes([0, raw, 0, 0, 0, 0, 0, 0])
+      dat = packer.make_can_msg("GEAR", 0, {"PRNDL": gear, "COUNTER": 0})[1]
+      assert dat[:6] == bytes([0, raw, 0, 0, 0, 0])
+      assert dat[6] == 0
 
     assert packer.make_can_msg("DOORS", 0, {"DOOR_OPEN_FL": 1})[1] == b"\x01\x00\x00\x00\x00\x00\x00\x00"
     assert packer.make_can_msg("DOORS", 0, {"DOOR_OPEN_FR": 1})[1] == b"\x00\x80\x00\x00\x00\x00\x00\x00"

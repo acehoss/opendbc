@@ -50,6 +50,67 @@ class TestCanChecksums(unittest.TestCase):
         parser.update([0, [(0xFA, bytes(corrupted), 0)]])
         assert parser.vl_all["ABS_3"]["BRAKE_PEDAL_SWITCH"] == []
 
+  def verify_susw(self, msg_name: str, msg_addr: int, bus: int, test_messages: list[bytes], corrupt_byte: int = 0):
+    """Consecutive captured frames must pass the Chrysler checksum and the counter, and a flipped bit must not."""
+    parser = CANParser("chrysler_susw", [(msg_name, 0)], bus)
+    first = next(iter(parser.vl[msg_name]))
+
+    for data in test_messages:
+      parser.update([0, [(msg_addr, data, bus)]])
+      with self.subTest(data=data.hex()):
+        assert parser.vl[msg_name]["CHECKSUM"] == data[-1]
+        assert parser.vl_all[msg_name][first] != []
+
+    corrupted = bytearray(test_messages[-1])
+    corrupted[corrupt_byte] ^= 0x01
+    parser.update([0, [(msg_addr, bytes(corrupted), bus)]])
+    assert parser.vl_all[msg_name][first] == []
+
+  def test_chrysler_susw_vehicle_status(self):
+    """0xF1, CAN CH only, the counter is in byte 6's LOW nibble."""
+    self.verify_susw("VEHICLE_STATUS", 0xF1, 0, [
+      b'\x00\xe0\x00\x00\x00\x00\x02\xe8',
+      b'\x00\xe0\x00\x00\x00\x00\x03\xf5',
+      b'\x00\xe0\x00\x00\x00\x00\x04\xa6',
+    ], corrupt_byte=1)
+
+  def test_chrysler_susw_acc_command(self):
+    """0x15C, raw CAN C. Third frame carries a live decel request."""
+    self.verify_susw("ACC_COMMAND", 0x15C, 0, [
+      b'\x32\x00\x01\x3d\x30\x00\x00\x04',
+      b'\x32\x00\x01\x00\x10\x00\x01\x09',
+      b'\xb0\x19\x01\x00\x10\x00\x02\x6d',
+    ])
+
+  def test_chrysler_susw_gear(self):
+    """0x190, raw CAN C. The counter and CRC were there all along and were simply not declared."""
+    self.verify_susw("GEAR", 0x190, 0, [
+      b'\x00\x10\x00\x00\x00\x00\x0b\xd1',
+      b'\x00\x10\x00\x00\x00\x00\x0c\x82',
+      b'\x00\x10\x00\x00\x00\x00\x0d\x9f',
+    ], corrupt_byte=1)
+
+  def test_chrysler_susw_abs_6(self):
+    """0x101: the field once declared as BRAKE_PRESSURE_2 is the message counter."""
+    self.verify_susw("ABS_6", 0x101, 0, [
+      b'\x00\x75\x00\x00\x00\x00\x01\x38',
+      b'\x00\x75\x40\x00\x00\x00\x02\x80',
+      b'\x00\x75\x60\x00\x00\x00\x03\x5c',
+    ], corrupt_byte=1)
+
+  def test_chrysler_susw_fusion(self):
+    """Private fusion bus. Same Chrysler CRC-8, but the counter is in byte 6's HIGH nibble."""
+    self.verify_susw("RADAR_STATUS", 0x200, 1, [
+      b'\x50\x00\x01\x27\x1d\x00\x70\x7d',
+      b'\x50\x00\x01\x27\x1e\x00\x80\x8e',
+      b'\x50\x00\x01\x27\x1f\x00\x90\xcc',
+    ])
+    self.verify_susw("RADAR_TRACK_1", 0x2C0, 1, [
+      b'\x24\x04\x04\x31\x04\x84\x70\xf5',
+      b'\x24\x04\x04\x31\x04\x85\x80\xc6',
+      b'\x24\x02\x04\x31\x04\x86\x90\x56',
+    ])
+
   def verify_checksum(self, dbc_file: str, msg_name: str, msg_addr: int, test_messages: list[bytes],
                       checksum_field: str = 'CHECKSUM', counter_field = 'COUNTER'):
     """

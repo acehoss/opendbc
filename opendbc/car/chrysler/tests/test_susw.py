@@ -1,6 +1,6 @@
 import unittest
 
-from opendbc.can import CANPacker, CANParser
+from opendbc.can import CANDefine, CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
 from opendbc.car.chrysler.chryslercan import create_comma_heartbeat, create_lkas_command
@@ -54,6 +54,7 @@ GEAR2_D = "008c800000000000"            # t=477.9
 GEAR2_MANUAL = "008cc00000000000"       # route 000000d8 t=557.0, the AutoStick gate
 GEAR2_PB_ENGAGED = "058c200000000000"   # t=494.8, byte 1 = 0x8c
 GEAR2_PB_RELEASED = "000c200000000000"  # t=498.9, byte 1 = 0x0c
+GEAR2_PB_APPLYING = "028c200000000000"   # t=500.2, byte 0 = 0x02, the apply transition
 LEVERS_LEFT = "00000200"
 LEVERS_RIGHT = "00000100"
 LEVERS_HAZARDS = "00000300"
@@ -543,9 +544,9 @@ class TestSuswDbc(unittest.TestCase):
   """The three DBC corrections from analysis/carstate-evidence.md, checked on captured frames."""
 
   @staticmethod
-  def _decode(name: str, addr: int, frame: str) -> dict:
-    cp = CANParser("chrysler_susw", [(name, 0)], 0)
-    cp.update([(0, [(addr, bytes.fromhex(frame), 0)])])
+  def _decode(name: str, addr: int, frame: str, bus: int = 0) -> dict:
+    cp = CANParser("chrysler_susw", [(name, 0)], bus)
+    cp.update([(0, [(addr, bytes.fromhex(frame), bus)])])
     return cp.vl[name]
 
   def test_steering_rate_scale(self):
@@ -570,6 +571,145 @@ class TestSuswDbc(unittest.TestCase):
     self.assertLess(right["LATERAL_ACCEL"], 0)
     self.assertLess(right["YAW_RATE"], 0)
     self.assertAlmostEqual(right["YAW_RATE"], -0.4324, places=4)
+
+  def test_inertial_scale(self):
+    # 0.01916 m/s2 per count, not the 0.01 originally declared, which understated acceleration
+    # 1.9x and capped an hour of driving with eleven stops at -2.34 m/s2. Both turns now read a
+    # physical cornering acceleration instead of an implausibly gentle one.
+    left = self._decode("ABS_2", 0xfe, ABS_2_LEFT_TURN)
+    right = self._decode("ABS_2", 0xfe, ABS_2_RIGHT_TURN)
+    self.assertAlmostEqual(left["LATERAL_ACCEL"], 2.8928, places=4)
+    self.assertAlmostEqual(right["LATERAL_ACCEL"], -2.0696, places=4)
+    self.assertAlmostEqual(left["LONG_ACCEL"], 1.0343, places=4)
+
+    # a_lat = v * yaw_rate is the independent check the scale was calibrated against
+    for frame, speed in ((ABS_2_LEFT_TURN, 8.5), (ABS_2_RIGHT_TURN, 4.9)):
+      with self.subTest(frame=frame):
+        vl = self._decode("ABS_2", 0xfe, frame)
+        self.assertAlmostEqual(vl["LATERAL_ACCEL"], speed * vl["YAW_RATE"], delta=0.5)
+
+  def test_odometer(self):
+    # 20-bit count across byte2, byte3 and byte4's high nibble; 1 km per count (inferred, see the
+    # DBC comment) and monotone within and across routes
+    boot = self._decode("ODOMETER", 0x259, "00000a3f50800000")     # t=0.6, still invalid
+    self.assertEqual((boot["ODOMETER"], boot["ODOMETER_INVALID"]), (41973, 1))
+    late = self._decode("ODOMETER", 0x259, "00000a4210000000")     # t=3000
+    self.assertEqual((late["ODOMETER"], late["ODOMETER_INVALID"]), (42017, 0))
+    self.assertGreater(late["ODOMETER"], boot["ODOMETER"])
+
+  def test_vehicle_status(self):
+    for frame, moving, ignition in (("00e00000000004a6", 1, 1),      # byte1 0xe0, driving
+                                    ("0060000000000df3", 0, 1),      # byte1 0x60, stopped
+                                    ("00200000000008ca", 0, 0)):     # byte1 0x20, last 0.24 s
+      with self.subTest(frame=frame):
+        vl = self._decode("VEHICLE_STATUS", 0xf1, frame)
+        self.assertEqual((vl["VEHICLE_MOVING"], vl["IGNITION_RUN"]), (moving, ignition))
+
+  def test_vin(self):
+    # byte 0 is a 3-frame multiplex index, bytes 1-7 are ASCII; not a DBC multiplex because the
+    # 56-bit concatenation would not survive float64 signal values
+    vin = ""
+    for frame, mux in (("005a41434e4a4444", 0), ("0131305050503230", 1), ("0232313800000000", 2)):
+      vl = self._decode("VIN", 0x416, frame)
+      self.assertEqual(vl["VIN_MUX"], mux)
+      vin += "".join(chr(int(vl[f"VIN_BYTE_{i}"])) for i in range(1, 8) if vl[f"VIN_BYTE_{i}"])
+    self.assertEqual(len(vin), 17)
+    self.assertTrue(vin.startswith("ZAC"))          # WMI: Jeep Italy, the Renegade line
+    self.assertEqual(vin[9], "P")                   # model year 2023
+
+  def test_battery_is_raw_counts(self):
+    # deliberately undeclared scale: 0.0703 V/count is a back-fit from assuming 14.2 V at the
+    # charging plateau, never a measurement, so the signal stays in counts
+    vl = self._decode("BATTERY", 0x41a, "c6c200a4a04920")
+    self.assertEqual(vl["BATTERY_VOLTAGE_RAW"], 198)
+
+  def test_parking_brake_transition(self):
+    for frame, state in ((GEAR2_PB_ENGAGED, 5), (GEAR2_PB_APPLYING, 2), (GEAR2_D, 0)):
+      with self.subTest(frame=frame):
+        self.assertEqual(self._decode("GEAR_2", 0x5a9, frame)["PARKING_BRAKE_TRANSITION"], state)
+
+  def test_engine_torque(self):
+    # the former UNKNOWN_4 (declared little-endian by mistake) is the top of a 10-bit offset-binary
+    # torque field; only the 10-bit reading is continuous
+    for frame, rpm, torque in (("0df0c002084640fb", 892, 50),      # idle
+                               ("272cc2c2084529d7", 2507, 41),
+                               ("1b9cc1c208420fa8", 1767, 16)):
+      with self.subTest(frame=frame):
+        vl = self._decode("ENGINE_1", 0xfc, frame)
+        self.assertEqual((vl["ENGINE_RPM"], vl["ENGINE_TORQUE"], vl["ENGINE_STOPPED"]), (rpm, torque, 0))
+
+  def test_eps_2_status_bits(self):
+    # NOT_REVERSE and SPEED_BELOW_50KPH were UNKNOWN_STATUS and UNKNOWN_2
+    quiet = self._decode("EPS_2", 0x106, EPS_2_QUIET)              # parked, so under 50 km/h
+    self.assertEqual((quiet["NOT_REVERSE"], quiet["SPEED_BELOW_50KPH"]), (1, 1))
+    driving = self._decode("EPS_2", 0x106, DRIVING["EPS_2"])       # t=1200, 15.9 m/s = 57 km/h
+    self.assertEqual((driving["NOT_REVERSE"], driving["SPEED_BELOW_50KPH"]), (1, 0))
+
+  def test_abs_6_counter(self):
+    # the field previously declared as BRAKE_PRESSURE_2 (43|12) is byte5's zero nibble plus the
+    # message counter, and consecutive captured frames step it by one
+    counters = [self._decode("ABS_6", 0x101, f)["COUNTER"] for f in
+                ("0075000000000138", "0075400000000280", "007560000000035c")]
+    self.assertEqual(counters, [1, 2, 3])
+
+  def test_clock_carries_the_date(self):
+    vl = self._decode("CLOCK", 0x73a, "171323082026")
+    bcd = {k: (int(v) >> 4) * 10 + (int(v) & 0xf) for k, v in vl.items()}
+    self.assertEqual((bcd["CENTURY_BCD"], bcd["YEAR_BCD"], bcd["MONTH_BCD"], bcd["DAY_BCD"]), (20, 26, 8, 23))
+    self.assertEqual((bcd["HOUR_BCD"], bcd["MINUTE_BCD"]), (17, 13))   # local time, route is 21:13 UTC
+
+  def test_acc_command(self):
+    idle = self._decode("ACC_COMMAND", 0x15c, "320001000000032b")
+    self.assertEqual((idle["ACC_DECEL_REQUEST"], idle["ACC_DECEL_ACTIVE"]), (1600, 0))
+    self.assertEqual((idle["ACC_ACCEL_REQUEST"], idle["ACC_ENGAGED"]), (0, 0))
+
+    # the accel request is 11 bits: byte3 plus byte4 bits 7-5, which an earlier reading had as a
+    # separate rolling counter. byte3 alone would read 70 here.
+    accel = self._decode("ACC_COMMAND", 0x15c, "3200014610000d68")
+    self.assertEqual((accel["ACC_ACCEL_REQUEST"], accel["ACC_ENGAGED"]), (560, 1))
+    self.assertEqual(accel["ACC_DECEL_ACTIVE"], 0)
+
+    # accel and decel are mutually exclusive
+    decel = self._decode("ACC_COMMAND", 0x15c, "b01901001000026d")
+    self.assertEqual((decel["ACC_DECEL_REQUEST"], decel["ACC_DECEL_ACTIVE"]), (5635, 1))
+    self.assertEqual(decel["ACC_ACCEL_REQUEST"], 0)
+    self.assertEqual(decel["ACC_ENGAGED"], 1)
+
+  def test_radar_track(self):
+    # the private fusion bus. 0x2c0 is the ACC lead slot.
+    lead = self._decode("RADAR_TRACK_1", 0x2c0, "23f80427049050ea", bus=1)   # t=2106.6 "lead present"
+    self.assertEqual(lead["TRACK_VALID"], 1)
+    self.assertEqual((lead["AZIMUTH_LO"], lead["AZIMUTH_HI"]), (-8, 39))     # straddles boresight
+    self.assertAlmostEqual(lead["RANGE"], 73.0, places=2)
+    self.assertLess(lead["AZIMUTH_LO"], 0)
+    self.assertGreater(lead["AZIMUTH_HI"], 0)
+
+    empty = self._decode("RADAR_TRACK_1", 0x2c0, "0400040000006042", bus=1)
+    self.assertEqual(empty["TRACK_VALID"], 0)
+    self.assertEqual((empty["AZIMUTH_LO"], empty["AZIMUTH_HI"], empty["RANGE"]), (0, 0, 0))
+
+    # the counter is in byte 6's HIGH nibble on fusion, the opposite of raw CAN C
+    self.assertEqual(lead["COUNTER"], 5)
+
+  def test_radar_status_time_base(self):
+    # bytes 3-4 ramp at 36.06 counts/s independently of speed, so it is a time base
+    a = self._decode("RADAR_STATUS", 0x200, "00000104d8005044", bus=1)   # t=41.94
+    b = self._decode("RADAR_STATUS", 0x200, "000001100f00f0bc", bus=1)   # t=121.70
+    self.assertEqual((a["TIME_BASE"], b["TIME_BASE"]), (1240, 4111))
+    self.assertAlmostEqual((b["TIME_BASE"] - a["TIME_BASE"]) / (121.70 - 41.94), 36.0, delta=0.5)
+
+  def test_acc_gap_lead_enum(self):
+    define = CANDefine("chrysler_susw")
+    gap = define.dv["ACC_HUD"]["ACC_GAP_LEAD_STATE"]
+    self.assertEqual(gap[1], "OFF")
+    self.assertEqual((gap[2], gap[6], gap[10], gap[14]),
+                     ("READY_GAP_1", "LEAD_GAP_1", "NO_LEAD_GAP_1", "STANDBY_GAP_1"))
+    # gap index is consistent across the four banks
+    for base in (2, 6, 10, 14):
+      for i in range(4):
+        self.assertTrue(gap[base + i].endswith(f"_{i + 1}"))
+    self.assertEqual(define.dv["LKA_HUD_2"]["LKA_HUD_STATE"][0], "LANESENSE_OFF")
+    self.assertEqual(define.dv["ACC_HUD"]["ACC_STATE"][5], "STANDBY")
 
   def test_parking_brake_polarity(self):
     # raw-C PARKING_BRAKE_STATUS 0x256 bit 3 is 1 = ENGAGED (the earlier reading was inverted)
@@ -599,11 +739,15 @@ class TestSuswDbc(unittest.TestCase):
         vl = self._decode("ABS_5", 0x116, frame)
         self.assertEqual([vl[f"VEHICLE_MOVING_{i}"] for i in range(1, 5)], [moving] * 4)
 
-    # direction lives in the ACTIVE_* bits: FL/RL forward, FR/RR backward
+    # direction lives in the ROLLING_* bits. They were named per-wheel (ACTIVE_FL/FR/RL/RR) but
+    # bits 32/34 are one signal sent twice and 33/35 are its reverse counterpart, so no axle is
+    # claimed: they are numbered 1 and 2.
     fwd = self._decode("ABS_5", 0x116, ABS_5_FORWARD)
-    self.assertEqual((fwd["ACTIVE_FL"], fwd["ACTIVE_FR"]), (1, 0))
+    self.assertEqual([fwd[k] for k in ("ROLLING_FORWARD_1", "ROLLING_REVERSE_1",
+                                       "ROLLING_FORWARD_2", "ROLLING_REVERSE_2")], [1, 0, 1, 0])
     rev = self._decode("ABS_5", 0x116, ABS_5_REVERSE)
-    self.assertEqual((rev["ACTIVE_FL"], rev["ACTIVE_FR"]), (0, 1))
+    self.assertEqual([rev[k] for k in ("ROLLING_FORWARD_1", "ROLLING_REVERSE_1",
+                                       "ROLLING_FORWARD_2", "ROLLING_REVERSE_2")], [0, 1, 0, 1])
 
 
 if __name__ == "__main__":
