@@ -16,6 +16,8 @@ class CarController(CarControllerBase):
     self.lkas_control_bit_prev = False
     self.last_button_frame = 0
     self.heartbeat_counter = 0
+    self.lkas_counter = 0
+    self.lkas_tx_prev = False
 
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.params = CarControllerParams(CP)
@@ -98,7 +100,32 @@ class CarController(CarControllerBase):
         apply_torque = 0
       self.apply_torque_last = apply_torque
 
-      can_sends.append(chryslercan.create_lkas_command(self.packer, self.CP, int(apply_torque), lkas_control_bit))
+      if susw:
+        # G3 hand-over, the openpilot half of the contract in chrysler_susw_fwd_hook(). The panda now
+        # FORWARDS the stock camera's 0x1F6 to the EPS whenever controls are not allowed, and blocks it
+        # only while they are, so stock LaneSense still steers the car when openpilot is inactive. That
+        # only works if exactly one sender is on the wire at a time: openpilot must therefore stay off
+        # 0x1F6 unless it is the intended controller, or the EPS would see two 100 Hz senders running
+        # two independent counter sequences and reject both.
+        #
+        # RESIDUAL, for the bench before actuation: the two predicates are deliberately different.
+        # The panda blocks stock on controls_allowed (ACC engaged AND LaneSense on); this gate is
+        # CC.latActive. In the window where openpilot is enabled but lateral is not active - driver
+        # torque override, blinker, below minSteerSpeed - the stock frame is blocked and openpilot
+        # sends nothing, so the EPS sees NO 0x1F6 at all until one side or the other changes. Erring
+        # this way keeps the two-sender case impossible, which is the one that could fight the driver;
+        # how long the EPS tolerates a command gap is unmeasured and is a bench item.
+        if CC.latActive:
+          # Continue the stock camera's counter across the hand-over: the camera keeps transmitting
+          # while the panda blocks it, so CS.lkas_counter is the last value the EPS would have seen.
+          # After the first frame openpilot free-runs its own sequence at the same 100 Hz cadence.
+          self.lkas_counter = (self.lkas_counter if self.lkas_tx_prev else int(CS.lkas_counter) + 1) % 0x10
+          can_sends.append(chryslercan.create_lkas_command(self.packer, self.CP, int(apply_torque),
+                                                           lkas_control_bit, counter=self.lkas_counter))
+          self.lkas_counter += 1
+        self.lkas_tx_prev = CC.latActive
+      else:
+        can_sends.append(chryslercan.create_lkas_command(self.packer, self.CP, int(apply_torque), lkas_control_bit))
 
     self.frame += 1
 

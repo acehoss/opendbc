@@ -3,7 +3,10 @@ import unittest
 from opendbc.can import CANDefine, CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
+from opendbc.car.car_helpers import can_fingerprint
+from opendbc.car.fingerprints import _FINGERPRINTS as ALL_FINGERPRINTS
 from opendbc.car.chrysler.chryslercan import create_comma_heartbeat, create_lkas_command
+from opendbc.car.chrysler.fingerprints import FINGERPRINTS
 from opendbc.car.chrysler.interface import CarInterface
 from opendbc.car.chrysler.values import CAR, CarControllerParams
 
@@ -17,7 +20,7 @@ PT_ADDRS = {"EPS_1": 0xde, "ABS_1": 0xee, "ABS_3": 0xfa, "ENGINE_1": 0xfc,
             "SEATBELT_STATUS": 0x257, "DOORS": 0x4b1, "GEAR_2": 0x5a9,
             "STEERING_LEVERS": 0x73e}
 ADAS_ADDRS = {"ACC_STATUS_1": 0x103, "CRUISE_BUTTONS": 0x2fa, "ACC_HUD": 0x73c}
-CAM_ADDRS = {"LKA_HUD_2": 0x547}
+CAM_ADDRS = {"LKA_HUD_2": 0x547, "LKAS_COMMAND": 0x1f6}
 
 # All raw frames below were captured from the 2023 Jeep Renegade on route
 # 873a474e9ad72abb|000000e7--c05680fea1 and its paired raw CAN C capture.
@@ -70,6 +73,18 @@ EPS_2_QUIET = "7d638168000794"           # DRIVER_TORQUE 11, TORQUE_MOTOR 6
 # EPS_2_QUIET with LKA_FAULT forced to 1 and the checksum recomputed.
 EPS_2_LKA_FAULT = "7d63816880075d"
 
+# EPS_2.LKA_LOW_SPEED_INHIBIT transitions, route e7. Each row is
+# (label, EPS_2 with the bit set, EPS_2 with it clear, ABS_6 at the first, ABS_6 at the second),
+# taken as the two consecutive 0x106 frames either side of one transition.
+EPS_2_INHIBIT_EDGES = (
+  ("release t=1153.69", "7b738868000386", "7c2384e0000475", "006440000000091d", "0064400000000a3a"),
+  ("release t=1239.48", "7e63986800077a", "7ec39a40000838", "0064600000000cb5", "0064800000000dd5"),
+  ("release t=1398.60", "7ca37ec8000176", "7ca37e000002fd", "0064e0000000032d", "0065000000000445"),
+  ("assert  t=1216.02", "7de38ee8000eea", "7de38c20000d46", "0063e07400000357", "00634074000002a8"),
+  ("assert  t=1382.38", "7d639808000c2f", "7de399e0000b5e", "0063e02400000e67", "0063a02400000ddf"),
+  ("assert  t=1697.49", "7d937ce800065b", "7d337c20000532", "0062c0d4000004fc", "0062a0d4000003f1"),
+)
+
 # Frames backing the DBC scale/sign corrections, all from route e7
 EPS_1_AT_REST = "1c6697d00153"           # t=100.0, stationary, STEERING_RATE raw 2000
 EPS_1_SWEEP = "20ba98fe0d68"             # t=509.2, parked sweep toward the left lock
@@ -88,6 +103,9 @@ LANESENSE_ON_GREY = "0000000000400200"     # LaneSense on, no lanes acquired
 LANESENSE_ON_GREEN = "0000000000400c00"    # LaneSense on, lanes acquired and armed
 LANESENSE_OFF = "0000004000400000"         # LaneSense switched off (route 00000003 t=196.5)
 
+# a real stock camera LKAS_COMMAND from bus 2: disarmed, zero torque, COUNTER 14
+STOCK_LKAS_C14 = "80000e97"
+
 # ACC messages, raw CAN C
 ACC_OFF = "000003e80000082b"            # ACC_STATUS_1, ACC_ENGAGED = 0
 ACC_ENGAGED = "0000200200000c70"        # ACC_STATUS_1, ACC_ENGAGED = 1
@@ -104,6 +122,69 @@ BTN_ACCEL = "200a1900"                  # ACC_ACCEL
 BTN_GAP_DEC = "400ef200"                # ACC_DISTANCE_DEC
 BTN_GAP_INC = "0085f100"                # ACC_DISTANCE_INC, byte 1 bit 7
 BTN_CANCEL = "80089f00"                 # ACC_CANCEL, test-drive-2 t=947.9 ("cancel with button")
+
+# 0x103 / 0x15c engage-bit corroboration, raw CAN C capture 20260823T211320Z-collection-run-1 (route e7).
+# One row per side of every ACC_STATUS_1.ACC_ENGAGED transition, sampled 300 ms out so the ~16 ms skew
+# between the two messages cannot alias: (t, ACC_STATUS_1 frame, the ACC_COMMAND frame in force at that
+# instant, the engaged state both must report). All 14 engagements are covered twice.
+ACC_ENGAGE_PAIRS = (
+  (1160.395, "000003e800000e65", "320001000000075f", 0),
+  (1160.995, "0000647600000aa1", "3200014790000a66", 1),
+  (1210.116, "001024a600000aae", "3200014a900003dc", 1),
+  (1210.716, "002003e8000006a5", "3200010000000478", 0),
+  (1242.326, "000003e800000f78", "320001000000000c", 0),
+  (1242.926, "000024e800000bc6", "3200014e90000392", 1),
+  (1283.687, "0030e47e000007a3", "32000148100009e9", 1),
+  (1284.287, "002083e8000003ef", "3200010000000bc3", 0),
+  (1286.847, "002003e8000003cc", "3200010000000478", 0),
+  (1287.447, "0020246a00000f88", "32000146d000071a", 1),
+  (1350.098, "000023f40000081d", "3200013f70000437", 1),
+  (1350.698, "000003e8000004b7", "3200010000000642", 0),
+  (1420.269, "002003e8000001f6", "3200010000000d8d", 0),
+  (1420.869, "007024a200000dcb", "3200014a5000005b", 1),
+  (1681.391, "00102456000001af", "32000145900003b4", 1),
+  (1681.991, "001003e800000d56", "3200010000000565", 0),
+  (1800.422, "002003e8000000eb", "3200010000000565", 0),
+  (1801.022, "0000252c00000c10", "32000152f00008fa", 1),
+  (1870.832, "000024ea00000133", "3200014ed0000b1a", 1),
+  (1871.432, "002003e800000d6a", "3200010000000d8d", 0),
+  (1884.312, "00b003e800000536", "3200010000000d8d", 0),
+  (1884.912, "00d02416000001cb", "32000141900000dd", 1),
+  (2242.762, "0000245200000a3a", "320001455000067d", 1),
+  (2243.362, "000003e80000068d", "32000100000008e4", 0),
+  (2353.231, "000003e8000001de", "3200010000000236", 0),
+  (2353.832, "0000250000000d95", "32000150300005fc", 1),
+  (2604.281, "00002446000002b9", "3200014490000113", 1),
+  (2604.881, "000043e800000efa", "320001000000032b", 0),
+  (2614.900, "002043e80000089c", "320001000000075f", 0),
+  (2615.501, "000024900000041a", "3200014930000a63", 1),
+  (2805.349, "0020249600000dae", "3200014990000ffa", 1),
+  (2805.949, "000043e8000009a9", "3200010000000111", 0),
+  (2883.079, "000003e800000a11", "3200010000000478", 0),
+  (2883.679, "0000241200000632", "320001413000077e", 1),
+  (2898.938, "0000a49200000cf6", "32000149500002db", 1),
+  (2899.538, "000043e8000008b4", "3200010000000478", 0),
+  (2940.758, "0000c3e800000245", "320001000000000c", 0),
+  (2941.358, "0000a4f800000ea9", "3200014fb000033f", 1),
+  (2995.068, "00002432000009c3", "3200014350000147", 1),
+  (2995.668, "001003e8000005be", "320001000000032b", 0),
+  (3016.408, "000003e800000f78", "3200010000000236", 0),
+  (3017.008, "0010251000000bea", "3200015130000561", 1),
+  (3141.497, "0030647800000c26", "32000147b00006ca", 1),
+  (3142.097, "003043e800000888", "32000100000008e4", 0),
+  (3197.237, "001003e8000002ed", "3200010000000fb7", 0),
+  (3197.836, "0000242a00000e29", "32000142d000023d", 1),
+  (3266.626, "0000200200000d6d", "ad91010010000298", 1),
+  (3267.226, "000003e800000936", "3200010000000478", 0),
+  (3309.886, "001003e8000003f0", "3200010000000eaa", 0),
+  (3310.486, "000024aa00000f01", "3200014ad0000186", 1),
+  (3356.576, "0030e48e0000003e", "32000149100002bb", 1),
+  (3357.175, "0030c3e800000cdf", "3200010000000478", 0),
+  (3383.076, "001043e800000a9a", "320001000000075f", 0),
+  (3383.676, "000024300000065f", "32000143300009ff", 1),
+  (3414.975, "0000243600000078", "32000143900006b4", 1),
+  (3415.575, "000003e800000c5f", "32000100000008e4", 0),
+)
 
 
 class SuswTestBase(unittest.TestCase):
@@ -190,8 +271,18 @@ class TestSuswCarState(SuswTestBase):
         self.assertEqual(CS.seatbeltUnlatched, unlatched)
 
   def test_lka_fault_is_temporary(self):
-    # never observed asserting, so it is wired to the recoverable fault: steerFaultPermanent
-    # latches steerUnavailable for the whole ignition cycle
+    """LKA_FAULT is wired to steerFaultTemporary, deliberately and on no positive evidence.
+
+    The bit never asserts in any capture, so temporary vs permanent cannot be settled from data
+    (raised by quiet-lynx and velvet-moth in round 1). carstate.py explains why temporary is the
+    conservative choice for a dashcam-only first drive; this test exists so that flipping it to
+    permanent later has to be a deliberate edit backed by a bench fault sample, not a silent drift.
+    The asserting frame is packed, not recorded - see EPS_2_LKA_FAULT.
+    """
+    quiet = self.update(DRIVING | {"EPS_2": EPS_2_QUIET})
+    self.assertFalse(quiet.steerFaultTemporary)
+    self.assertFalse(quiet.steerFaultPermanent)
+
     CS = self.update(DRIVING | {"EPS_2": EPS_2_LKA_FAULT})
     self.assertTrue(CS.steerFaultTemporary)
     self.assertFalse(CS.steerFaultPermanent)
@@ -518,7 +609,8 @@ class TestSuswLkasCommand(unittest.TestCase):
 
 
 class TestSuswCarController(SuswTestBase):
-  def _run(self, frames: int, v_ego: float, lat_active: bool = True, cancel: bool = False, resume: bool = False, torque: float = 0.5):
+  def _run(self, frames: int, v_ego: float, lat_active: bool = True, cancel: bool = False, resume: bool = False,
+           torque: float = 0.5, cam: dict | None = None):
     CC = structs.CarControl()
     CC.enabled = True
     CC.latActive = lat_active
@@ -527,7 +619,7 @@ class TestSuswCarController(SuswTestBase):
     CC.actuators.torque = torque
     CC = CC.as_reader()
 
-    self.update(DRIVING, {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE})
+    self.update(DRIVING, {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}, cam)
 
     sent = []
     for _ in range(frames):
@@ -558,9 +650,33 @@ class TestSuswCarController(SuswTestBase):
     self.assertTrue(all(dat[1] & 0x10 for dat in active))          # still armed
     self.assertNotEqual(max((dat[0] << 3 | dat[1] >> 5) - 1024 for dat in active), 0)
 
-    inactive = self._lkas(self._run(50, 20., lat_active=False, torque=1.0))
-    self.assertTrue(all(dat[1] & 0x10 for dat in inactive))        # still armed
-    self.assertEqual([(dat[0] << 3 | dat[1] >> 5) - 1024 for dat in inactive], [0] * 50)
+    # with lateral inactive nothing is transmitted at all any more - the stock camera's frame is
+    # forwarded instead, see test_lkas_tx_is_gated_on_lat_active
+    self.assertEqual(self._lkas(self._run(50, 20., lat_active=False, torque=1.0)), [])
+
+  def test_lkas_tx_is_gated_on_lat_active(self):
+    # G3 hand-over: the panda forwards the stock camera's 0x1F6 to the EPS while openpilot is inactive
+    # (chrysler_susw_fwd_hook) and blocks it only while controls are allowed. openpilot must therefore
+    # be silent on 0x1F6 unless it is the intended controller, or the EPS sees two 100 Hz senders.
+    inactive = self._run(50, 20., lat_active=False, torque=1.0)
+    self.assertEqual([(addr, bus) for can_sends in inactive for addr, _, bus in can_sends],
+                     [(0x5f0, 1)] * 5)                            # heartbeat only, 10 Hz
+
+    self.setUp()
+    active = self._run(50, 20., lat_active=True, torque=1.0)
+    self.assertEqual(len(self._lkas(active)), 50)                 # one 0x1f6 per 100 Hz frame
+
+  def test_counter_continues_the_stock_sequence(self):
+    # the camera keeps sending 0x1F6 while the panda blocks it, so the first openpilot frame after the
+    # hand-over resumes the counter the EPS last saw rather than restarting an independent sequence
+    sent = self._run(20, 20., cam={"LKAS_COMMAND": STOCK_LKAS_C14})
+    counters = [dat[2] & 0xf for dat in self._lkas(sent)]         # LKAS_COMMAND.COUNTER, 19|4
+    self.assertEqual(counters, [(15 + i) % 16 for i in range(20)])
+
+    # going inactive and coming back resynchronises again instead of continuing from 15+20
+    self._run(20, 20., lat_active=False, cam={"LKAS_COMMAND": STOCK_LKAS_C14})
+    resumed = self._lkas(self._run(4, 20., cam={"LKAS_COMMAND": STOCK_LKAS_C14}))
+    self.assertEqual([dat[2] & 0xf for dat in resumed], [15, 0, 1, 2])
 
   def test_heartbeat_is_sent_when_inactive(self):
     # the gateway opt-in does not depend on openpilot being engaged
@@ -729,11 +845,26 @@ class TestSuswDbc(unittest.TestCase):
         self.assertEqual((vl["ENGINE_RPM"], vl["ENGINE_TORQUE"], vl["ENGINE_STOPPED"]), (rpm, torque, 0))
 
   def test_eps_2_status_bits(self):
-    # NOT_REVERSE and SPEED_BELOW_50KPH were UNKNOWN_STATUS and UNKNOWN_2
-    quiet = self._decode("EPS_2", 0x106, EPS_2_QUIET)              # parked, so under 50 km/h
-    self.assertEqual((quiet["NOT_REVERSE"], quiet["SPEED_BELOW_50KPH"]), (1, 1))
+    # NOT_REVERSE and LKA_LOW_SPEED_INHIBIT were UNKNOWN_STATUS and UNKNOWN_2
+    quiet = self._decode("EPS_2", 0x106, EPS_2_QUIET)              # parked, so under the floor
+    self.assertEqual((quiet["NOT_REVERSE"], quiet["LKA_LOW_SPEED_INHIBIT"]), (1, 1))
     driving = self._decode("EPS_2", 0x106, DRIVING["EPS_2"])       # t=1200, 15.9 m/s = 57 km/h
-    self.assertEqual((driving["NOT_REVERSE"], driving["SPEED_BELOW_50KPH"]), (1, 0))
+    self.assertEqual((driving["NOT_REVERSE"], driving["LKA_LOW_SPEED_INHIBIT"]), (1, 0))
+
+  def test_lka_low_speed_inhibit_threshold(self):
+    # Name adopted from brisk-otter's round-1 review; re-verified here against ABS_6.VEHICLE_SPEED.
+    # Each entry is the two consecutive 0x106 frames straddling one transition on route 000000e7 plus
+    # the 0x101 frame in force at each instant. Every transition in both drives happens inside the
+    # 13.3-13.8 m/s band; the ABS_6 quantum is 0.017 m/s and the EPS clearly filters its own speed, so
+    # the claim under test is the band and the polarity, not a sample-exact threshold.
+    for label, eps_set, eps_clear, abs_set, abs_clear in EPS_2_INHIBIT_EDGES:
+      with self.subTest(edge=label):
+        self.assertEqual(self._decode("EPS_2", 0x106, eps_set)["LKA_LOW_SPEED_INHIBIT"], 1)
+        self.assertEqual(self._decode("EPS_2", 0x106, eps_clear)["LKA_LOW_SPEED_INHIBIT"], 0)
+        for frame in (abs_set, abs_clear):
+          v = self._decode("ABS_6", 0x101, frame)["VEHICLE_SPEED"]
+          self.assertGreater(v, 13.3)
+          self.assertLess(v, 13.8)
 
   def test_abs_6_counter(self):
     # the field previously declared as BRAKE_PRESSURE_2 (43|12) is byte5's zero nibble plus the
@@ -764,6 +895,29 @@ class TestSuswDbc(unittest.TestCase):
     self.assertEqual((decel["ACC_DECEL_REQUEST"], decel["ACC_DECEL_ACTIVE"]), (5635, 1))
     self.assertEqual(decel["ACC_ACCEL_REQUEST"], 0)
     self.assertEqual(decel["ACC_ENGAGED"], 1)
+
+  def test_engage_bit_corroborated_by_0x15c(self):
+    """ACC_STATUS_1 (0x103) and ACC_COMMAND (0x15c) must agree about ACC_ENGAGED.
+
+    Cross-message corroboration idea from brisk-otter's round-1 review, which validated the same
+    claim on its own data (14/14 intervals, 17 ms median delta). This is a DBC/evidence regression
+    test only: 0x15c is not in the RPGW whitelist, so openpilot never sees it at runtime and no
+    CarState behavior depends on it. What it locks down is that the engage bit the port DOES use -
+    ACC_STATUS_1 bit 21, the one pcm_cruise_check() keys off - is corroborated by an independent
+    message that was decoded separately.
+    """
+    engaged = 0
+    for t, frame_103, frame_15c, expected in ACC_ENGAGE_PAIRS:
+      with self.subTest(t=t):
+        status_1 = self._decode("ACC_STATUS_1", 0x103, frame_103)["ACC_ENGAGED"]
+        command = self._decode("ACC_COMMAND", 0x15c, frame_15c)["ACC_ENGAGED"]
+        self.assertEqual(status_1, command)
+        self.assertEqual(status_1, expected)
+      engaged += expected
+
+    # the fixture straddles all 14 engagements, so it must be balanced and cover both states
+    self.assertEqual(len(ACC_ENGAGE_PAIRS), 56)
+    self.assertEqual(engaged, 28)
 
   def test_radar_track(self):
     # the private fusion bus. 0x2c0 is the ACC lead slot.
@@ -888,6 +1042,66 @@ class TestSuswDbc(unittest.TestCase):
     rev = self._decode("ABS_5", 0x116, ABS_5_REVERSE)
     self.assertEqual([rev[k] for k in ("ROLLING_FORWARD_1", "ROLLING_REVERSE_1",
                                        "ROLLING_FORWARD_2", "ROLLING_REVERSE_2")], [0, 1, 0, 1])
+
+
+class TestSuswFingerprint(unittest.TestCase):
+  """The two CAN fingerprint dicts, and what each one survives.
+
+  Robustness against trim variation was raised by brisk-otter in round 1 as a fuzzy/subset fallback.
+  opendbc has no fuzzy CAN fingerprint in this version - see the comment in chrysler/fingerprints.py -
+  so the answer here is a second dict on the private fusion bus, which can_fingerprint() eliminates
+  independently of bus 0. These tests pin down that both dicts identify the platform on their own,
+  that a body-ID-only census loss still matches, and that neither dict makes any other platform
+  ambiguous.
+  """
+
+  BUS_0, BUS_1 = FINGERPRINTS[CAR.JEEP_RENEGADE]
+
+  # every ID the port's CarState needs. A trim that dropped any of these would not be portable at all,
+  # so these are the IDs the fingerprint is really keyed on.
+  LOAD_BEARING_BUS_0 = dict(sorted({0xde: 6, 0xee: 8, 0xfa: 8, 0xfc: 8, 0xfe: 8, 0x101: 8, 0x106: 7,
+                                    0x116: 8, 0x1f0: 8, 0x1f6: 4, 0x257: 8, 0x4b1: 8, 0x547: 8,
+                                    0x5a9: 8, 0x73e: 4}.items()))
+
+  @staticmethod
+  def _fingerprint(finger: dict[int, int], bus: int) -> str | None:
+    can = [CanData(address=addr, dat=b"\x00" * dlc, src=bus) for addr, dlc in finger.items()]
+    packets = iter([can])
+    return can_fingerprint(lambda **kwargs: [next(packets, [])])[0]
+
+  def test_both_dicts_identify_the_platform(self):
+    self.assertEqual(self._fingerprint(self.BUS_0, 0), CAR.JEEP_RENEGADE)
+    self.assertEqual(self._fingerprint(self.BUS_1, 1), CAR.JEEP_RENEGADE)
+
+  def test_load_bearing_ids_alone_still_match(self):
+    # matching is elimination-based, so a trim that DROPS body IDs still matches as long as no other
+    # platform survives the same census. Down to the 15 IDs CarState actually reads, it is still unique.
+    self.assertEqual(self._fingerprint(self.LOAD_BEARING_BUS_0, 0), CAR.JEEP_RENEGADE)
+
+  def test_fusion_bus_matches_without_the_gateway(self):
+    # the fusion fallback has to work in both gateway states: in BYPASS the comma sees only the radar
+    # burst, in INTERCEPT it also sees the three copied ACC IDs and GATEWAY_HEARTBEAT.
+    gateway_ids = (0x103, 0x2fa, 0x5f1, 0x73c)
+    for addr in gateway_ids:
+      self.assertIsNotNone(self.BUS_1.get(addr), f"{hex(addr)} missing from the bus 1 fingerprint")
+    stock = {a: d for a, d in self.BUS_1.items() if a not in gateway_ids}
+    self.assertEqual(self._fingerprint(stock, 1), CAR.JEEP_RENEGADE)
+
+  def test_load_bearing_ids_are_in_the_census(self):
+    for addr, dlc in self.LOAD_BEARING_BUS_0.items():
+      with self.subTest(addr=hex(addr)):
+        self.assertEqual(self.BUS_0.get(addr), dlc)
+    for addr in list(PT_ADDRS.values()) + list(CAM_ADDRS.values()):
+      self.assertIsNotNone(self.BUS_0.get(addr), f"{hex(addr)} is parsed but missing from the bus 0 fingerprint")
+    for addr in ADAS_ADDRS.values():
+      self.assertIsNotNone(self.BUS_1.get(addr), f"{hex(addr)} is parsed but missing from the bus 1 fingerprint")
+
+  def test_no_other_platform_becomes_ambiguous(self):
+    # widening a platform's accept-set can only hurt other platforms, so check the whole catalog
+    for car_model, fingerprints in ALL_FINGERPRINTS.items():
+      for i, fingerprint in enumerate(fingerprints):
+        with self.subTest(car_model=car_model, fingerprint=i):
+          self.assertEqual(self._fingerprint(fingerprint, 0), car_model)
 
 
 if __name__ == "__main__":

@@ -5,16 +5,56 @@ from opendbc.car.chrysler.values import CAR
 Ecu = CarParams.Ecu
 
 # The SUSW (FCA small-wide) platform has no upstream-quality FW fingerprint yet, so it is matched on CAN.
-# This is the bus 0 (camera-side "CAN CH") address census, identical across all four captured Renegade routes.
 # A parked UDS sweep did return 0xf181 responses (29-bit normal-fixed addressing: EPS 0x30 'S2FI03FC00',
 # ABS 0x28, combination meter 0x60), but 0xf132 (the Chrysler version DID) returned NRC 0x31 on every ECU,
 # so no FW_VERSIONS entry is claimed here.
+#
+# Fuzzy / subset fallback idea from brisk-otter (round-1 review): one trim's exact census is brittle,
+# a Renegade that adds or drops a body ID would not fingerprint. Two things had to be settled first.
+#
+# 1. opendbc has NO fuzzy CAN fingerprint mechanism in this version. "Fuzzy" here only ever means FW
+#    fingerprinting (match_fw_to_car_fuzzy in opendbc/car/fw_versions.py). CAN matching is
+#    eliminate_incompatible_cars() in opendbc/car/fingerprints.py: a candidate is killed the moment it
+#    sees one address (or one DLC) that is not in its dict. Matching is therefore already subset-tolerant
+#    in one direction - a trim that DROPS an ID still matches - and intolerant in the other.
+# 2. Trimming this dict down to the "stable core" would make the port strictly WORSE, because every
+#    address removed becomes an address that kills the match on a real car. The conservative move here
+#    is the opposite of trimming, so option (a) in the review is deliberately not taken.
+#
+# What is done instead: the bus 0 census stays complete, and a second dict describes the private fusion
+# bus. eliminate_incompatible_cars() accepts a message if ANY of a platform's dicts contains it, and
+# can_fingerprint() runs the elimination independently on bus 0 and bus 1, so the fusion dict is a real
+# second identification path: a trim whose CAN CH body census differs can still be identified from bus 1,
+# which carries only ADAS traffic and no trim-varying body IDs. Both dicts are asserted unique by
+# opendbc.car.tests.test_can_fingerprint and by TestSuswFingerprint in the chrysler tests.
+#
+# Load-bearing IDs (the port's CarState dies without these, and none of them is optional equipment):
+#   bus 0  0xde EPS_1, 0xee ABS_1, 0xfa ABS_3, 0xfc ENGINE_1, 0xfe ABS_2, 0x101 ABS_6, 0x106 EPS_2,
+#          0x116 ABS_5, 0x1f0 ACCEL_PEDAL_DRIVER, 0x1f6 LKAS_COMMAND, 0x257 SEATBELT_STATUS,
+#          0x4b1 DOORS, 0x547 LKA_HUD_2, 0x5a9 GEAR_2, 0x73e STEERING_LEVERS
+#   bus 1  the 14-message fusion burst plus the ACC set the gateway copies (0x103, 0x2fa, 0x73c)
+# The other bus 0 entries (0x250, 0x256, 0x259, 0x2ec, 0x380, 0x384, 0x416, 0x41a, 0x4af, 0x5a2, 0x5a4,
+# 0x5a6, 0x5b0, 0x5c0, 0x739, 0x7ca) are body/comfort traffic that is only there to keep the census
+# complete; they are the ones most likely to vary by trim, which is exactly why the fusion dict exists.
 FINGERPRINTS = {
-  CAR.JEEP_RENEGADE: [{
-    222: 6, 238: 8, 241: 8, 250: 8, 252: 8, 254: 8, 257: 8, 262: 7, 270: 7, 278: 8, 346: 4, 496: 8, 501: 5, 502: 4,
-    592: 4, 599: 8, 601: 8, 748: 8, 896: 8, 900: 8, 1046: 8, 1199: 8, 1201: 8, 1351: 8, 1442: 8, 1446: 8, 1449: 8,
-    1456: 8, 1472: 4, 1849: 4, 1854: 4, 1994: 2
-  }],
+  CAR.JEEP_RENEGADE: [
+    # bus 0, camera-side "CAN CH". Periodic (>= 0.5 Hz) 11-bit addresses; identical set and identical DLCs
+    # on all four captured routes (00000003, 000000ca, 000000d8, 000000e7). One-shot UDS responses to the
+    # comma's own boot sweep are excluded - they are not vehicle traffic, see analysis/fingerprint-census.md.
+    {
+      222: 6, 238: 8, 241: 8, 250: 8, 252: 8, 254: 8, 257: 8, 262: 7, 270: 7, 278: 8, 346: 4, 496: 8, 501: 5, 502: 4,
+      592: 4, 599: 8, 601: 8, 748: 8, 896: 8, 900: 8, 1046: 8, 1199: 8, 1201: 8, 1351: 8, 1442: 8, 1446: 8, 1449: 8,
+      1456: 8, 1472: 4, 1849: 4, 1854: 4, 1994: 2
+    },
+    # bus 1, private camera<->radar fusion bus. The 14-message 40 ms burst plus 0x7a9, identical on all four
+    # routes, then the three ACC messages the RPGW copies over in INTERCEPT (0x103, 0x2fa, 0x73c) and the
+    # gateway's own 4 Hz GATEWAY_HEARTBEAT 0x5f1. COMMA_HEARTBEAT 0x5f0 is not listed: openpilot transmits
+    # it, so it only ever comes back as a TX echo on src >= 128, which can_fingerprint() ignores.
+    {
+      259: 8, 512: 8, 544: 8, 576: 8, 608: 8, 640: 8, 672: 8, 704: 8, 762: 4, 768: 8, 800: 8, 832: 8, 864: 8,
+      896: 8, 928: 8, 960: 8, 1521: 8, 1852: 8, 1961: 2
+    },
+  ],
 }
 
 FW_VERSIONS = {
