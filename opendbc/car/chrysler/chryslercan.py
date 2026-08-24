@@ -82,6 +82,18 @@ def create_susw_cruise_buttons(packer, frame, bus, cancel=False, resume=False):
   return packer.make_can_msg("CRUISE_BUTTONS", bus, values)
 
 
+def create_comma_heartbeat(packer, counter, lat_active):
+  # COMMA_HEARTBEAT - private fusion bus only, not a vehicle message.
+  # G4: the RPGW gateway forwards silently until it hears this, treats it as the opt-in for
+  # INTERCEPT, and falls back to BYPASS when it stops. Sent whenever openpilot is running.
+  values = {
+    "OPENPILOT_ALIVE": 1,
+    "LAT_ACTIVE": lat_active,
+    "COUNTER": counter % 0x10,
+  }
+  return packer.make_can_msg("COMMA_HEARTBEAT", 1, values)
+
+
 def chrysler_checksum(address: int, sig, d: bytearray) -> int:
   checksum = 0xFF
   # Chrysler checksums protect the payload prefix before the checksum signal.

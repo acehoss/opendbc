@@ -61,14 +61,19 @@ static safety_config chrysler_susw_init(uint16_t param) {
   SAFETY_UNUSED(param);
 
   static const CanMsg CHRYSLER_SUSW_TX_MSGS[] = {
-    {0x1F6U, 0, 4, .check_relay = true},  // LKAS_COMMAND
+    {0x1F6U, 0, 4, .check_relay = true},  // LKAS_COMMAND, to the EPS on the car side
+    // COMMA_HEARTBEAT, on the private fusion bus only. This is the gateway's opt-in for
+    // INTERCEPT, so it has to be sendable whether or not controls are allowed, and it is not a
+    // vehicle message, so there is no stock ECU to check the relay against.
+    {0x5F0U, 1, 8, .check_relay = false},
   };
 
   static RxCheck chrysler_susw_rx_checks[] = {
     {.msg = {{0xFAU,  0, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // ABS_3
-    {.msg = {{0xFCU,  0, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // ENGINE_1
     {.msg = {{0x101U, 0, 8, 100U, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  // ABS_6, has no counter
     {.msg = {{0x106U, 0, 7, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // EPS_2
+    // ACCEL_PEDAL_DRIVER carries neither a counter nor a checksum, only its rate is checked
+    {.msg = {{0x1F0U, 0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     // gatewayed from raw CAN C, checked so a dead gateway link also drops controls
     {.msg = {{0x103U, 1, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // ACC_STATUS_1
     {.msg = {{0x2FAU, 1, 4, 50U,  .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // CRUISE_BUTTONS
@@ -99,9 +104,13 @@ static void chrysler_susw_rx_hook(const CANPacket_t *msg) {
       brake_pressed = GET_BIT(msg, 3U);
     }
 
-    if (msg->addr == 0xFCU) {
-      // Signal: ENGINE_1.ACCEL_PEDAL, the low 5 bits of byte 2 and the top 3 bits of byte 3
-      gas_pressed = ((msg->data[2] & 0x1FU) != 0U) || ((msg->data[3] >> 5) != 0U);
+    if (msg->addr == 0x1F0U) {
+      // Signal: ACCEL_PEDAL_DRIVER.ACCEL_PEDAL_DRIVER, the low nibble of byte 0 and the top 3
+      // bits of byte 1. This is the driver's own accelerator: it is exactly 0 across 2596 s of
+      // settled ACC-engaged driving. ENGINE_1.THROTTLE_VIRTUAL (0xFC) is the PCM's resolved
+      // demand, driver or ACC, and is nonzero on 97.5 % of ACC-engaged frames, so it must not
+      // be used here.
+      gas_pressed = ((msg->data[0] & 0x0FU) != 0U) || ((msg->data[1] & 0xE0U) != 0U);
     }
   }
 

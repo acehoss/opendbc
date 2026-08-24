@@ -176,9 +176,9 @@ class CarState(CarStateBase):
     return ret
 
   def update_susw(self, cp, cp_cam, cp_fusion):
-    # cp: bus 0, the camera-side "CAN CH" bus. cp_cam: bus 2, the stock camera.
+    # cp: bus 0, the camera-side "CAN CH" bus. cp_cam: bus 2, the stock camera, which is where the
+    # camera's own LKAS_COMMAND and LKA_HUD_2 arrive before the panda forwards them to bus 0.
     # cp_fusion: bus 1, where a gateway republishes the three raw CAN C ACC messages.
-    # The camera bus carries only LKAS_COMMAND and LKA_HUD_2, neither of which maps to CarState yet.
     ret = structs.CarState()
 
     # Only the two front doors are decoded on this platform, the rear-door bits in 0x4b1 are unknown
@@ -188,7 +188,10 @@ class CarState(CarStateBase):
     ret.seatbeltUnlatched = False
 
     ret.brakePressed = bool(cp.vl["ABS_3"]["BRAKE_PEDAL_SWITCH"])
-    ret.gasPressed = cp.vl["ENGINE_1"]["ACCEL_PEDAL"] > 0
+    # ENGINE_1.THROTTLE_VIRTUAL is the PCM's resolved demand (driver OR ACC), so it reads > 0 on 97.5 %
+    # of ACC-engaged frames. ACCEL_PEDAL_DRIVER (0x1f0) is driver-only: exactly 0 across 2,596 s of
+    # settled ACC-engaged driving, and > 0 for 98.6 % of the parked pedal press. No deadband needed.
+    ret.gasPressed = cp.vl["ACCEL_PEDAL_DRIVER"]["ACCEL_PEDAL_DRIVER"] > 0
 
     # ABS_1 wheel speeds are already m/s. They are not run through parse_wheel_speeds() because that
     # helper also overwrites vEgoRaw with the wheel speed mean, and ABS_6.VEHICLE_SPEED is the speed
@@ -227,7 +230,11 @@ class CarState(CarStateBase):
 
     # ACC state comes from the fusion bus. ACC_STATE: 0 off, 1 on/ready, 2 engaged, 5 standby after cancel
     ret.cruiseState.available = cp_fusion.vl["ACC_HUD"]["ACC_STATE"] in (1, 2, 5)
-    ret.cruiseState.enabled = cp_fusion.vl["ACC_STATUS_1"]["ACC_ENGAGED"] == 1
+    # G3: openpilot engages through the stock ACC controls, and is active only while ACC is engaged
+    # AND LaneSense is on. LaneSense off (or ACC off) means openpilot is inactive and ACC/LaneSense
+    # behave exactly as stock. LANESENSE_DISABLED comes from the camera's own HUD message on bus 2.
+    lanesense_disabled = bool(cp_cam.vl["LKA_HUD_2"]["LANESENSE_DISABLED"])
+    ret.cruiseState.enabled = cp_fusion.vl["ACC_STATUS_1"]["ACC_ENGAGED"] == 1 and not lanesense_disabled
     ret.cruiseState.speed = cp_fusion.vl["ACC_HUD"]["ACC_SET_SPEED_KPH"] * CV.KPH_TO_MS
     ret.cruiseState.nonAdaptive = False  # this car has no non-adaptive cruise mode
 
@@ -250,6 +257,7 @@ class CarState(CarStateBase):
         ("ABS_1", 100),
         ("ABS_3", 100),
         ("ENGINE_1", 100),
+        ("ACCEL_PEDAL_DRIVER", 50),
         ("ABS_6", 100),
         ("EPS_2", 100),
         ("DOORS", 2),             # 2 Hz plus on change
@@ -263,7 +271,8 @@ class CarState(CarStateBase):
       ]
       return {
         Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
-        Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 2),
+        # the stock camera's HUD message, the only LaneSense state openpilot can see
+        Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [("LKA_HUD_2", 4)], 2),
         Bus.adas: CANParser(DBC[CP.carFingerprint][Bus.adas], adas_messages, 1),
       }
 
