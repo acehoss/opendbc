@@ -40,6 +40,12 @@ LEVERS_HAZARDS = "00000300"
 DOOR_FL_OPEN = "0100000000000000"
 DOOR_FR_OPEN = "0080000000000000"
 
+# All-ones sentinel / saturated EPS frames. EPS_1 is the second frame of route
+# 873a474e9ad72abb|00000003--a598b092c5, EPS_2 is from the parked steering sweep in route e7.
+EPS_1_SENTINEL = "ffff9fff0046"          # STEERING_ANGLE raw 0x3fff, STEERING_RATE raw 0xfff
+EPS_2_SATURATED = "41d300080008e8"       # DRIVER_TORQUE raw 0, the signed code minimum
+EPS_2_QUIET = "7d638168000794"           # DRIVER_TORQUE 11, TORQUE_MOTOR 6
+
 # ACC messages, raw CAN C
 ACC_OFF = "000003e80000082b"            # ACC_STATUS_1, ACC_ENGAGED = 0
 ACC_ENGAGED = "0000200200000c70"        # ACC_STATUS_1, ACC_ENGAGED = 1
@@ -120,6 +126,32 @@ class TestSuswCarState(SuswTestBase):
         self.setUp()
         CS = self.update(DRIVING | {"DOORS": doors})
         self.assertEqual(CS.doorOpen, expected)
+
+  def test_eps_sentinel_holds_last_value(self):
+    quiet = DRIVING | {"EPS_2": EPS_2_QUIET}
+    CS = self.update(quiet)
+    self.assertAlmostEqual(CS.steeringAngleDeg, 3.8, places=3)
+    self.assertAlmostEqual(CS.steeringRateDeg, -0.5, places=3)
+    self.assertEqual(CS.steeringTorque, 11)
+    self.assertFalse(CS.steeringPressed)
+
+    # the EPS all-ones sentinel and the saturated driver torque are both discarded
+    CS = self.update(quiet | {"EPS_1": EPS_1_SENTINEL, "EPS_2": EPS_2_SATURATED})
+    self.assertAlmostEqual(CS.steeringAngleDeg, 3.8, places=3)
+    self.assertAlmostEqual(CS.steeringRateDeg, -0.5, places=3)
+    self.assertEqual(CS.steeringTorque, 11)
+    self.assertFalse(CS.steeringPressed)
+
+    # TORQUE_MOTOR is not sentinel protected, it still tracks the saturated frame
+    self.assertEqual(CS.steeringTorqueEps, -947)
+
+  def test_eps_sentinel_on_first_frame(self):
+    # nothing valid has been seen yet, so the held values are zero and the driver is not pressing
+    CS = self.update(DRIVING | {"EPS_1": EPS_1_SENTINEL, "EPS_2": EPS_2_SATURATED})
+    self.assertEqual(CS.steeringAngleDeg, 0.)
+    self.assertEqual(CS.steeringRateDeg, 0.)
+    self.assertEqual(CS.steeringTorque, 0.)
+    self.assertFalse(CS.steeringPressed)
 
   def test_cruise_state(self):
     cases = (
