@@ -45,9 +45,11 @@
 // addresses are still forwarded normally, but safety_rx_hook() still calls
 // stock_ecu_check() on them.
 //
-// The probe is "a frame that can only exist on the other half". ABS_1 and EPS_2
+// The probe is "a frame that can only exist on the other half". ABS_1 and EPS_1
 // are sent by the ABS module and the EPS, both of which are on the body harness
-// side of XY005A; the fascia side of the inline carries the radar. The panda
+// side of XY005A; the fascia side of the inline carries the radar. Both are
+// ~100 Hz on raw CAN C (9.7 ms period, analysis/decode-baseline-summary.md), so a
+// stuck-closed switch pair is detected within a frame time of the 1 s settle. The panda
 // never receives its own transmissions (TX echoes go to can_rx_q from
 // process_can(), not through can_rx()), so in a working INTERCEPT these two are
 // only ever received on bus 0. Receiving either on bus 2 means the two halves
@@ -55,23 +57,34 @@
 // board/gateway.h drops to POWERED BYPASS. stock_ecu_check() allows
 // safety_mode_cnt > 1 s of settling after the mode change first.
 //
+// Note that EPS_2 (0x106) would be a *dead* probe and is deliberately not used:
+// analysis/decode-baseline-summary.md lists it among the four CH-only addresses
+// (0x106 EPS_2, 0x10E ABS_7, 0x1F6 LKAS_COMMAND, 0x547 LKA_HUD_2), so it never
+// appears on raw CAN C at all and could never be heard on bus 2 however badly the
+// switches failed. EPS_1 (0x0DE) is the EPS frame that is actually on this bus.
+//
 // Only the body -> bus 2 direction is probed, deliberately. The obvious
-// reverse-direction candidates are ACC_STATUS_1 (0x103) and ACC_STATUS_2 (0x15C),
-// but this project has not established their sender: docs/susw-dbc-notes.md
-// records "key-on order was not decisive (0x103 appears in the same millisecond
-// as the ABS frames)" and still lists "identify the sender of 0x103/0x15c (radar
-// vs ABS)" as an open task. If either is actually body-originated, listing it on
-// bus 0 would latch relay_malfunction about a second into *every healthy*
-// INTERCEPT and permanently disable the gateway -- a fail-dangerous false
-// positive dressed up as a hardware fault. One evidence-backed direction detects
-// a stuck-closed relay just as reliably; the second direction is a one-line
-// addition once a key-on capture settles the sender.
+// reverse-direction candidate is ACC_STATUS_2 (0x15C), but its sender is not
+// established: docs/susw-dbc-notes.md records "key-on order was not decisive
+// (0x103 appears in the same millisecond as the ABS frames)" and still lists
+// "identify the sender of 0x103/0x15c (radar vs ABS)" as open, and the
+// crystal-signature analysis in LONGITUDINAL.md attributes 0x103 to the ABS while
+// leaving 0x15C only as "not ABS-sent", which is not the same as "radar-sent". If
+// 0x15C is neither, listing it on bus 0 would latch relay_malfunction about a
+// second into *every healthy* INTERCEPT and permanently disable the gateway -- a
+// fail-dangerous false positive dressed up as a hardware fault. One
+// evidence-backed direction detects a stuck-closed relay just as reliably.
+//
+// Add the radar-side probe once the first successful INTERCEPT capture attributes
+// senders directly: with the halves split, whatever is received on bus 2 is by
+// construction radar-originated, so one parked INTERCEPT run settles it and the
+// second entry becomes a one-line addition to the table below.
 static safety_config susw_gateway_init(uint16_t param) {
   static const CanMsg SUSW_GATEWAY_TX_MSGS[] = {
-    // ABS_1, 9.7 Hz, from the ABS module on the body side
+    // ABS_1, ~100 Hz, from the ABS module on the body side
     {0x0EEU, 2, 8, .check_relay = true, .disable_static_blocking = true},
-    // EPS_2, 9.7 Hz, from the EPS on the body side
-    {0x106U, 2, 7, .check_relay = true, .disable_static_blocking = true},
+    // EPS_1, ~100 Hz, from the EPS on the body side
+    {0x0DEU, 2, 6, .check_relay = true, .disable_static_blocking = true},
   };
 
   SAFETY_UNUSED(param);
