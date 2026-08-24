@@ -41,7 +41,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   # (message, bus, checksum byte index or None, carries a counter, values that keep controls up)
   RX_CHECKED_MSGS = (
     ("ABS_3", 0, 7, True, {}),
-    ("ABS_6", 0, 7, False, {}),
+    ("ABS_6", 0, 7, True, {}),
     ("EPS_2", 0, 6, True, {}),
     ("ACCEL_PEDAL_DRIVER", 0, None, False, {}),
     ("ACC_STATUS_1", GATEWAY_BUS, 7, True, {"ACC_ENGAGED": 1}),
