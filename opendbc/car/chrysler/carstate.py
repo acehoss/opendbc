@@ -17,6 +17,15 @@ SUSW_BUTTONS = {
   6: ButtonType.gapAdjustCruise,  # ACC_DISTANCE_DEC and ACC_DISTANCE_INC, two separate buttons on this car
 }
 
+# The SUSW EPS publishes the all-ones code extreme instead of a measurement on the first frames
+# after bus wake (EPS_1 STEERING_ANGLE raw 0x3fff, STEERING_RATE raw 0xfff), and DRIVER_TORQUE
+# saturates at its code minimum (raw 0). None of these are measurements, so hold the last valid
+# value instead. Compared with >=/<= rather than == because these are the code extremes: nothing
+# valid can reach them.
+SUSW_STEER_ANGLE_INVALID = 921.5     # deg, EPS_1 STEERING_ANGLE raw 0x3fff
+SUSW_STEER_RATE_INVALID = 1047.5     # deg/s, EPS_1 STEERING_RATE raw 0xfff
+SUSW_DRIVER_TORQUE_INVALID = -1024   # EPS_2 DRIVER_TORQUE raw 0
+
 
 class CarState(CarStateBase):
   def __init__(self, CP):
@@ -28,6 +37,9 @@ class CarState(CarStateBase):
     self.button_counter = 0
     self.lkas_car_model = -1
     self.susw_button = 0
+    self.susw_steering_angle = 0.
+    self.susw_steering_rate = 0.
+    self.susw_driver_torque = 0.
 
     if CP.carFingerprint in RAM_CARS:
       self.shifter_values = can_define.dv["Transmission_Status"]["Gear_State"]
@@ -198,9 +210,17 @@ class CarState(CarStateBase):
     ret.leftBlinker = turn_signals in (2, 3)
     ret.rightBlinker = turn_signals in (1, 3)
 
-    ret.steeringAngleDeg = cp.vl["EPS_1"]["STEERING_ANGLE"]
-    ret.steeringRateDeg = cp.vl["EPS_1"]["STEERING_RATE"]
-    ret.steeringTorque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
+    # sentinel/saturated frames are dropped, see the SUSW_*_INVALID comment above
+    if cp.vl["EPS_1"]["STEERING_ANGLE"] < SUSW_STEER_ANGLE_INVALID:
+      self.susw_steering_angle = cp.vl["EPS_1"]["STEERING_ANGLE"]
+    if cp.vl["EPS_1"]["STEERING_RATE"] < SUSW_STEER_RATE_INVALID:
+      self.susw_steering_rate = cp.vl["EPS_1"]["STEERING_RATE"]
+    if cp.vl["EPS_2"]["DRIVER_TORQUE"] > SUSW_DRIVER_TORQUE_INVALID:
+      self.susw_driver_torque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
+
+    ret.steeringAngleDeg = self.susw_steering_angle
+    ret.steeringRateDeg = self.susw_steering_rate
+    ret.steeringTorque = self.susw_driver_torque
     ret.steeringTorqueEps = cp.vl["EPS_2"]["TORQUE_MOTOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD
     ret.steerFaultPermanent = bool(cp.vl["EPS_2"]["LKA_FAULT"])
