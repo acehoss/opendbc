@@ -86,7 +86,7 @@ class CAR(Platforms):
   # LKAS_CONTROL_BIT, min 15.86 / 16.01 m/s) and drops out at ~14.9 m/s (falling edges 14.88 / 14.91).
   JEEP_RENEGADE = ChryslerPlatformConfig(
     [ChryslerCarDocs("Jeep Renegade 2023", package="Adaptive Cruise Control (ACC) & LaneSense")],
-    ChryslerCarSpecs(mass=1509., wheelbase=2.570, steerRatio=15.7, minSteerSpeed=16.0),
+    ChryslerCarSpecs(mass=1513., wheelbase=2.570, steerRatio=15.7, minSteerSpeed=16.0),
     # Bus.pt is the camera-side powertrain bus (bus 0), Bus.adas is the private fusion bus (bus 1) that
     # a gateway populates with the three raw CAN C ACC messages. Same DBC, parsed on two buses.
     {Bus.pt: 'chrysler_susw', Bus.adas: 'chrysler_susw'},
