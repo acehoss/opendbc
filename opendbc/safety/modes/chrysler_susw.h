@@ -82,10 +82,11 @@ static safety_config chrysler_susw_init(uint16_t param) {
 static void chrysler_susw_rx_hook(const CANPacket_t *msg) {
   if (msg->bus == 0U) {
     if (msg->addr == 0x106U) {
-      // Signal: EPS_2.TORQUE_MOTOR
-      int torque_meas_new = ((msg->data[0]) << 4) | (msg->data[1] >> 4);
-      torque_meas_new -= 2000;
-      update_sample(&torque_meas, torque_meas_new);
+      // Signal: EPS_2.DRIVER_TORQUE, all of byte 2 and the top 3 bits of byte 3.
+      // Same sign convention as LKAS_COMMAND.STEERING_TORQUE, positive is left.
+      int torque_driver_new = ((msg->data[2]) << 3) | (msg->data[3] >> 5);
+      torque_driver_new -= 1024;
+      update_sample(&torque_driver, torque_driver_new);
     }
 
     if (msg->addr == 0x101U) {
@@ -114,13 +115,19 @@ static void chrysler_susw_rx_hook(const CANPacket_t *msg) {
 
 static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
   const TorqueSteeringLimits CHRYSLER_SUSW_STEERING_LIMITS = {
-    // TODO: placeholders carried over from CUSW, tune against the car
+    // TODO: placeholder, the stock camera peaks at 383 on the measured routes
     .max_torque = 250,
+    // measured: the stock camera rate limits at exactly 6 counts per 10 ms frame, both directions
+    .max_rate_up = 6,
+    .max_rate_down = 6,
+    // TODO: placeholders, not yet measured on this car
     .max_rt_delta = 150,
-    .max_rate_up = 4,
-    .max_rate_down = 4,
-    .max_torque_error = 80,
-    .type = TorqueMotorLimited,
+    .driver_torque_allowance = 100,
+    .driver_torque_multiplier = 2,
+    // EPS_2.TORQUE_MOTOR is the motor's own output, ~0.23-0.25x the command plus ~0.12x the
+    // driver, so |command - TORQUE_MOTOR| runs to 397 on stock camera frames. A motor limited
+    // check would reject the stock envelope, so this is limited against the driver's torque.
+    .type = TorqueDriverLimited,
   };
 
   bool tx = true;

@@ -17,18 +17,19 @@ def corrupt_checksum(msg):
   return addr, dat[:-1] + bytes([dat[-1] ^ 0xFF]), bus
 
 
-class TestChryslerSuswSafety(common.CarSafetyTest, common.MotorTorqueSteeringSafetyTest):
+class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTest):
   TX_MSGS = [[0x1F6, 0]]
   STANDSTILL_THRESHOLD = 0
   RELAY_MALFUNCTION_ADDRS = {0: (0x1F6,)}
   FWD_BLACKLISTED_ADDRS = {2: [0x1F6]}
   FWD_BUS_LOOKUP = {0: 2, 2: 0}
 
-  MAX_RATE_UP = 4
-  MAX_RATE_DOWN = 4
+  MAX_RATE_UP = 6
+  MAX_RATE_DOWN = 6
   MAX_TORQUE_LOOKUP = [0], [250]
   MAX_RT_DELTA = 150
-  MAX_TORQUE_ERROR = 80
+  DRIVER_TORQUE_ALLOWANCE = 100
+  DRIVER_TORQUE_FACTOR = 2
 
   def setUp(self):
     self.packer = CANPackerSafety("chrysler_susw")
@@ -52,8 +53,8 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.MotorTorqueSteeringSaf
     values = {"BRAKE_PEDAL_SWITCH": 1 if brake else 0}
     return self.packer.make_can_msg_safety("ABS_3", 0, values)
 
-  def _torque_meas_msg(self, torque):
-    values = {"TORQUE_MOTOR": torque}
+  def _torque_driver_msg(self, torque):
+    values = {"DRIVER_TORQUE": torque}
     return self.packer.make_can_msg_safety("EPS_2", 0, values)
 
   def _torque_cmd_msg(self, torque, steer_req=1):
@@ -68,7 +69,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.MotorTorqueSteeringSaf
     for count in range(20):
       self.assertTrue(self._rx(self._speed_msg(0)), f"{count=}")
       self.assertTrue(self._rx(self._user_brake_msg(False)), f"{count=}")
-      self.assertTrue(self._rx(self._torque_meas_msg(0)), f"{count=}")
+      self.assertTrue(self._rx(self._torque_driver_msg(0)), f"{count=}")
       self.assertTrue(self._rx(self._user_gas_msg(0)), f"{count=}")
       self.assertTrue(self._rx(self._pcm_status_msg(False)), f"{count=}")
       self.assertTrue(self._rx(self._button_msg()), f"{count=}")
