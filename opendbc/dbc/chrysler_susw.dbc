@@ -61,12 +61,15 @@ BO_ 250 ABS_3: 8 ABS
 
 BO_ 252 ENGINE_1: 8 ENGINE
  SG_ ENGINE_RPM : 7|14@0+ (1,0) [0|16383] "rev/min" XXX
- SG_ ACCEL_PEDAL : 20|8@0+ (0.4,0) [0|102] "percent" XXX
+ SG_ THROTTLE_VIRTUAL : 20|8@0+ (0.4,0) [0|102] "percent" XXX
  SG_ REVERSE : 26|1@0+ (1,0) [0|1] "" XXX
  SG_ UNKNOWN_3 : 39|1@0+ (1,0) [0|1] "" XXX
  SG_ UNKNOWN_4 : 46|2@1+ (1,0) [0|3] "" XXX
  SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+
+BO_ 496 ACCEL_PEDAL_DRIVER: 8 ENGINE
+ SG_ ACCEL_PEDAL_DRIVER : 3|7@0+ (0.408,0) [0|51.8] "percent" XXX
 
 BO_ 254 ABS_2: 8 ABS
  SG_ LONG_ACCEL : 7|12@0+ (0.01,-20.48) [-20.48|20.47] "m/s2" XXX
@@ -183,6 +186,21 @@ BO_ 1852 ACC_HUD: 8 XXX
  SG_ ACC_STATE : 62|3@0+ (1,0) [0|7] "" XXX
  SG_ ACC_HUD_BIT2 : 58|1@0+ (1,0) [0|1] "" XXX
 
+BO_ 1520 COMMA_HEARTBEAT: 8 XXX
+ SG_ OPENPILOT_ALIVE : 0|1@0+ (1,0) [0|1] "" XXX
+ SG_ LAT_ACTIVE : 1|1@0+ (1,0) [0|1] "" XXX
+ SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+
+BO_ 1521 GATEWAY_HEARTBEAT: 8 XXX
+ SG_ GATEWAY_STATE : 7|8@0+ (1,0) [0|255] "" XXX
+ SG_ LAST_BYPASS_REASON : 15|8@0+ (1,0) [0|255] "" XXX
+ SG_ BLOCKING_REASON : 23|8@0+ (1,0) [0|255] "" XXX
+ SG_ HARNESS_STATUS : 31|8@0+ (1,0) [0|255] "" XXX
+ SG_ BODY_BUS : 39|8@0+ (1,0) [0|255] "" XXX
+ SG_ COUNTER : 51|4@0+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+
 BO_ 1444 BSM_1: 8 XXX
  SG_ RIGHT_STATUS : 12|1@0+ (1,0) [0|1] "" XXX
  SG_ LEFT_STATUS : 13|1@0+ (1,0) [0|1] "" XXX
@@ -203,6 +221,8 @@ CM_ SG_ 762 ACC_DISTANCE_INC "gap increase button (byte1 bit7)";
 CM_ SG_ 762 ACC_SET_DECEL "SET when not engaged, speed - when engaged";
 CM_ SG_ 762 ACC_ACCEL "RES+ / speed + when engaged";
 CM_ SG_ 259 ACC_SUBSTATE "1 was observed only while ACC_ENGAGED; it resets after some disengagements, including eight falling edges after ACC_ENGAGED cleared. Meaning TBD.";
+CM_ SG_ 252 THROTTLE_VIRTUAL "Formerly ACCEL_PEDAL. This is the PCM's commanded/virtual pedal: > 0 on 97.5 % of ACC-engaged frames (routes 000000e7/000000d8) and led by the 0x15C ACC accel request; it also carries the driver press (parked marks 134/135). Not a driver-only gas signal.";
+CM_ BO_ 496 "Raw CAN C and CH, ~50 Hz, no counter or checksum; bytes 2-7 always 0. Driver accelerator pedal: corr +0.9998 with THROTTLE_VIRTUAL while ACC is off, exactly 0 on all 128,528 settled ACC-engaged frames of routes 000000e7 and 000000d8, nonzero on 98.6 % of the parked pedal press (marks 134/135). Gain 0.408 %/count is fitted against THROTTLE_VIRTUAL, not pedal travel.";
 CM_ SG_ 257 MAYBE_ACC_BRAKE "may correlate with ACC-actuated braking";
 CM_ SG_ 250 TURN_SIGNAL_STATE "byte1 bits 0-1: 2 left, 1 right, 0 off. Hazards are not represented here; use STEERING_LEVERS.TURN_SIGNALS for hazards.";
 CM_ BO_ 598 "Raw CAN C only. byte0 bit3 is 1 with the electronic parking brake released and 0 while engaged; confirmed by the isolated parked on/off sweep in collection-run-1.";
@@ -233,9 +253,12 @@ CM_ SG_ 254 YAW_RATE "Left-positive, same convention as STEERING_ANGLE and LATER
 CM_ SG_ 270 YAW_RATE_RAW "Same sign correction as ABS_2.YAW_RATE, see the comment there.";
 CM_ SG_ 278 VEHICLE_MOVING_1 "Bits 36-39 were previously named FORWARD_1/REVERSE_1/FORWARD_2/REVERSE_2. They are not direction: all four carry the same 68.9 % duty and agree with ABS_6.VEHICLE_SPEED > 0 on 99.76 % of frames, so they are a vehicle-moving flag. Direction lives in the ACTIVE_* bits.";
 CM_ SG_ 278 ACTIVE_FR "Set on 99.07 % of reverse-and-moving frames and on 0.03 % of forward-and-moving frames (1609 set frames, 93.0 % inside an ENGINE_1.REVERSE window), so ACTIVE_FL/ACTIVE_FR look like a front-axle (forward, backward) rolling-direction pair rather than a per-wheel active flag. Not renamed: the per-wheel semantics are not proven, and this reports wheel rotation, not the selected gear.";
+CM_ BO_ 1520 "Private fusion bus only (comma bus 1), not a vehicle message. Sent by openpilot at 10 Hz; the RPGW gateway treats a valid frame (DLC 8, FCA CRC-8 over bytes 0-6, moving counter) as the opt-in for INTERCEPT and returns to BYPASS when it stops. ID chosen outside every address seen on fusion (0x200-0x3c0 radar slots, 0x7a9, 29-bit diagnostics) and outside the CAN C whitelist.";
+CM_ BO_ 1521 "Private fusion bus only (comma bus 1), not a vehicle message. Sent by the RPGW gateway at 5 Hz while it has heard COMMA_HEARTBEAT within the last 5 s. GATEWAY_STATE 0 = BYPASS, 1 = INTERCEPT; reason codes per board/gateway.h in panda.";
 VAL_ 250 TURN_SIGNAL_STATE 0 "OFF" 1 "RIGHT" 2 "LEFT" ;
 VAL_ 262 LKA_STATUS 0 "INACTIVE" 2 "ARMED" ;
 VAL_ 400 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" ;
 VAL_ 1351 LKA_HUD_STATE 2 "GREY_NO_LANES" 12 "GREEN_ARMED" 16 "YELLOW_LEFT" 20 "YELLOW_RIGHT" ;
 VAL_ 1852 ACC_GAP_LEAD_STATE 6 "LEAD_GAP_1" 7 "LEAD_GAP_2" 8 "LEAD_GAP_3" 9 "LEAD_GAP_4" 10 "NO_LEAD_GAP_1" 11 "NO_LEAD_GAP_2" 12 "NO_LEAD_GAP_3" 13 "NO_LEAD_GAP_4" ;
 VAL_ 1854 TURN_SIGNALS 0 "OFF" 1 "RIGHT" 2 "LEFT" 3 "HAZARDS" ;
+VAL_ 1521 GATEWAY_STATE 0 "BYPASS" 1 "INTERCEPT" ;

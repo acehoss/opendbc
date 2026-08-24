@@ -1,7 +1,7 @@
 import unittest
 
 from opendbc.can import CANPacker, CANParser
-from opendbc.car import DT_CTRL, structs
+from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
 from opendbc.car.chrysler.chryslercan import create_lkas_command
 from opendbc.car.chrysler.interface import CarInterface
@@ -13,13 +13,15 @@ GearShifter = structs.CarState.GearShifter
 # Addresses of every message the SUSW port reads, see opendbc/dbc/chrysler_susw.dbc.
 # Bus 0 is the camera-side "CAN CH" bus, bus 1 is the private fusion bus fed by the gateway.
 PT_ADDRS = {"EPS_1": 0xde, "ABS_1": 0xee, "ABS_3": 0xfa, "ENGINE_1": 0xfc,
-            "ABS_6": 0x101, "EPS_2": 0x106, "DOORS": 0x4b1, "STEERING_LEVERS": 0x73e}
+            "ABS_6": 0x101, "EPS_2": 0x106, "ACCEL_PEDAL_DRIVER": 0x1f0,
+            "DOORS": 0x4b1, "STEERING_LEVERS": 0x73e}
 ADAS_ADDRS = {"ACC_STATUS_1": 0x103, "CRUISE_BUTTONS": 0x2fa, "ACC_HUD": 0x73c}
 
 # All raw frames below were captured from the 2023 Jeep Renegade on route
 # 873a474e9ad72abb|000000e7--c05680fea1 and its paired raw CAN C capture.
 
-# t=1200 s, cruising at ~16 m/s with the driver holding the wheel
+# t=1200 s, cruising at ~16 m/s with the driver holding the wheel. ACC engagement #1 (1160.9-1210.6)
+# is active here, so ENGINE_1.THROTTLE_VIRTUAL reads 5.6 % while the driver's foot is off the pedal.
 DRIVING = {
   "EPS_1": "1c2697cf0b02",
   "ABS_1": "1d68e987543a606f",
@@ -27,6 +29,7 @@ DRIVING = {
   "ENGINE_1": "1b9cc1c208420fa8",
   "ABS_6": "00754000000000ba",
   "EPS_2": "7c737060400b15",
+  "ACCEL_PEDAL_DRIVER": "0000000000000000",
   "DOORS": "0000000000000000",
   "STEERING_LEVERS": "00000000",
 }
@@ -54,6 +57,10 @@ ABS_2_RIGHT_TURN = "8147946c60320747"    # t=924.5, steering angle -203.6 deg
 ABS_5_STOPPED = "0000000000000d8b"       # t=0.6, VEHICLE_SPEED 0
 ABS_5_FORWARD = "304afd21f500080f"       # t=915.0, 5.0 m/s forward
 ABS_5_REVERSE = "15130f0ffa000822"       # t=890.2, 0.5 m/s in reverse
+
+# 0x1f0 driver accelerator, from the isolated parked press at 564.15-571.59 s (marks 134/135)
+PEDAL_PRESSED = "0440000000000000"       # t=564.6, 13.872 %, the peak of the press
+PEDAL_BARELY_PRESSED = "0020000000000000"  # t=566.8, 0.408 %, one count
 
 # ACC messages, raw CAN C
 ACC_OFF = "000003e80000082b"            # ACC_STATUS_1, ACC_ENGAGED = 0
@@ -104,7 +111,7 @@ class TestSuswCarState(SuswTestBase):
     self.assertFalse(CS.steerFaultPermanent)
 
     self.assertFalse(CS.brakePressed)
-    self.assertTrue(CS.gasPressed)                 # ENGINE_1.ACCEL_PEDAL = 5.6 %
+    self.assertFalse(CS.gasPressed)                # driver pedal is 0 despite 5.6 % virtual throttle
     self.assertFalse(CS.doorOpen)
     self.assertFalse(CS.leftBlinker)
     self.assertFalse(CS.rightBlinker)
@@ -119,6 +126,20 @@ class TestSuswCarState(SuswTestBase):
     self.assertTrue(CS.brakePressed)
     self.assertFalse(CS.gasPressed)
     self.assertEqual(CS.gearShifter, GearShifter.reverse)
+
+  def test_gas_pressed_is_driver_only(self):
+    # the ACC-engaged frame pair: the PCM commands 5.6 % throttle with the driver's foot off the pedal
+    engaged = self.update(DRIVING)
+    self.assertFalse(engaged.gasPressed)
+    throttle_virtual = self.CI.can_parsers[Bus.pt].vl["ENGINE_1"]["THROTTLE_VIRTUAL"]
+    self.assertAlmostEqual(throttle_virtual, 5.6, places=3)
+
+    # the isolated parked press, same 0x1f0 message, no deadband needed down to a single count
+    for frame in (PEDAL_PRESSED, PEDAL_BARELY_PRESSED):
+      with self.subTest(frame=frame):
+        self.setUp()
+        CS = self.update(DRIVING | {"ACCEL_PEDAL_DRIVER": frame})
+        self.assertTrue(CS.gasPressed)
 
   def test_blinkers(self):
     for levers, left, right in ((LEVERS_LEFT, True, False), (LEVERS_RIGHT, False, True),

@@ -15,6 +15,7 @@ class CarController(CarControllerBase):
     self.last_lkas_falling_edge = 0
     self.lkas_control_bit_prev = False
     self.last_button_frame = 0
+    self.heartbeat_counter = 0
 
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.params = CarControllerParams(CP)
@@ -27,6 +28,14 @@ class CarController(CarControllerBase):
     # SUSW is lateral only: no cruise button TX (the buttons are on a bus openpilot cannot write)
     # and no HUD TX (the cluster HUD messages have not been decoded or safety validated)
     susw = self.CP.carFingerprint in SUSW_CARS
+
+    # RPGW gateway heartbeat, 10 Hz on the private fusion bus, sent whether or not openpilot is
+    # engaged. NOTE: while the platform is dashcamOnly, card.py substitutes the noOutput safety mode
+    # and nothing is transmitted, so the gateway never leaves BYPASS and the port sees no ACC state
+    # on bus 1. That is a documented limitation of dashcam mode, not of this message.
+    if susw and self.frame % 10 == 0:
+      can_sends.append(chryslercan.create_comma_heartbeat(self.packer, self.heartbeat_counter, CC.latActive))
+      self.heartbeat_counter += 1
 
     # cruise buttons
     if not susw and (self.frame - self.last_button_frame) * DT_CTRL > 0.05:
