@@ -4,6 +4,19 @@ from opendbc.car.chrysler.values import CAR
 
 Ecu = CarParams.Ecu
 
+# The SUSW (FCA small-wide) platform has no upstream-quality FW fingerprint yet, so it is matched on CAN.
+# This is the bus 0 (camera-side "CAN CH") address census, identical across all four captured Renegade routes.
+# A parked UDS sweep did return 0xf181 responses (29-bit normal-fixed addressing: EPS 0x30 'S2FI03FC00',
+# ABS 0x28, combination meter 0x60), but 0xf132 (the Chrysler version DID) returned NRC 0x31 on every ECU,
+# so no FW_VERSIONS entry is claimed here.
+FINGERPRINTS = {
+  CAR.JEEP_RENEGADE: [{
+    222: 6, 238: 8, 241: 8, 250: 8, 252: 8, 254: 8, 257: 8, 262: 7, 270: 7, 278: 8, 346: 4, 496: 8, 501: 5, 502: 4,
+    592: 4, 599: 8, 601: 8, 748: 8, 896: 8, 900: 8, 1046: 8, 1199: 8, 1201: 8, 1351: 8, 1442: 8, 1446: 8, 1449: 8,
+    1456: 8, 1472: 4, 1849: 4, 1854: 4, 1994: 2
+  }],
+}
+
 FW_VERSIONS = {
   CAR.CHRYSLER_PACIFICA_2018: {
     (Ecu.combinationMeter, 0x742, None): [

@@ -3,7 +3,7 @@ from opendbc.car import get_safety_config, structs
 from opendbc.car.chrysler.carcontroller import CarController
 from opendbc.car.chrysler.carstate import CarState
 from opendbc.car.chrysler.radar_interface import RadarInterface
-from opendbc.car.chrysler.values import CAR, CUSW_CARS, RAM_HD, RAM_DT, RAM_CARS, ChryslerFlags, ChryslerSafetyFlags
+from opendbc.car.chrysler.values import CAR, CUSW_CARS, RAM_HD, RAM_DT, RAM_CARS, SUSW_CARS, ChryslerFlags, ChryslerSafetyFlags
 from opendbc.car.interfaces import CarInterfaceBase
 
 
@@ -19,7 +19,8 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "chrysler"
 
     # TODO: Chrysler CUSW in dashcam pending comma safety validation and a fix for LKAS fault on disengage
-    ret.dashcamOnly = candidate in (RAM_HD | CUSW_CARS)
+    # TODO: Chrysler SUSW in dashcam pending comma safety validation and an on-car actuation test
+    ret.dashcamOnly = candidate in (RAM_HD | CUSW_CARS | SUSW_CARS)
 
     # radar parsing needs some work, see https://github.com/commaai/openpilot/issues/26842
     ret.radarUnavailable = True # Bus.radar not in DBC[candidate][Bus.radar]
@@ -34,9 +35,13 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs[0].safetyParam |= ChryslerSafetyFlags.RAM_DT.value
     elif candidate in CUSW_CARS:
       ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.chryslerCusw)]
+    elif candidate in SUSW_CARS:
+      ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.chryslerSusw)]
 
+    # SUSW borrows the CUSW (Jeep Cherokee) torque params via torque_data/substitute.toml. They are a
+    # placeholder: no lateral actuation route exists for the Renegade yet to fit real params.
     CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
-    if candidate not in RAM_CARS:
+    if candidate not in (RAM_CARS | SUSW_CARS):
       # Newer FW versions standard on the following platforms, or flashed by a dealer onto older platforms have a higher minimum steering speed.
       new_eps_platform = candidate in (CAR.CHRYSLER_PACIFICA_2019_HYBRID, CAR.CHRYSLER_PACIFICA_2020, CAR.JEEP_GRAND_CHEROKEE_2019, CAR.DODGE_DURANGO)
       new_eps_firmware = any(fw.ecu == 'eps' and fw.fwVersion[:4] >= b"6841" for fw in car_fw)
@@ -53,6 +58,9 @@ class CarInterface(CarInterfaceBase):
 
     # Jeep
     elif candidate == CAR.JEEP_CHEROKEE_5TH_GEN:
+      ret.steerActuatorDelay = 0.15
+
+    elif candidate == CAR.JEEP_RENEGADE:
       ret.steerActuatorDelay = 0.15
 
     elif candidate in (CAR.JEEP_GRAND_CHEROKEE, CAR.JEEP_GRAND_CHEROKEE_2019):
@@ -83,6 +91,7 @@ class CarInterface(CarInterfaceBase):
       ret.minSteerSpeed = 17.5  # m/s 17 on the way up, 13 on the way down once engaged.
 
     ret.centerToFront = ret.wheelbase * 0.44
-    ret.enableBsm = (0x62cc033 if candidate in CUSW_CARS else 0x2d0) in fingerprint[0]
+    # BSM_1 (0x5a4) is raw CAN C only on SUSW, so blindspot state never reaches openpilot
+    ret.enableBsm = candidate not in SUSW_CARS and (0x62cc033 if candidate in CUSW_CARS else 0x2d0) in fingerprint[0]
 
     return ret

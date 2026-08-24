@@ -2,7 +2,7 @@ from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL
 from opendbc.car.lateral import apply_meas_steer_torque_limits
 from opendbc.car.chrysler import chryslercan
-from opendbc.car.chrysler.values import CUSW_CARS, RAM_CARS, CarControllerParams, ChryslerFlags
+from opendbc.car.chrysler.values import CUSW_CARS, RAM_CARS, SUSW_CARS, CarControllerParams, ChryslerFlags
 from opendbc.car.interfaces import CarControllerBase
 
 
@@ -24,8 +24,12 @@ class CarController(CarControllerBase):
 
     lkas_active = CC.latActive and self.lkas_control_bit_prev
 
+    # SUSW is lateral only: no cruise button TX (the buttons are on a bus openpilot cannot write)
+    # and no HUD TX (the cluster HUD messages have not been decoded or safety validated)
+    susw = self.CP.carFingerprint in SUSW_CARS
+
     # cruise buttons
-    if (self.frame - self.last_button_frame) * DT_CTRL > 0.05:
+    if not susw and (self.frame - self.last_button_frame) * DT_CTRL > 0.05:
       das_bus = 2 if self.CP.carFingerprint in RAM_CARS else 0
 
       # ACC cancellation
@@ -39,7 +43,7 @@ class CarController(CarControllerBase):
         can_sends.append(chryslercan.create_cruise_buttons(self.packer, CS.button_counter + 1, das_bus, resume=True))
 
     # HUD alerts
-    if self.frame % 25 == 0:
+    if not susw and self.frame % 25 == 0:
       if CS.lkas_car_model != -1:
         can_sends.append(chryslercan.create_lkas_hud(self.packer, self.CP, lkas_active, CC.hudControl.visualAlert,
                                                      self.hud_count, CS.lkas_car_model, CS.auto_high_beam))
@@ -58,7 +62,7 @@ class CarController(CarControllerBase):
       elif self.CP.carFingerprint in RAM_CARS:
         if CS.out.vEgo < (self.CP.minSteerSpeed - 0.5):
           lkas_control_bit = False
-      elif self.CP.carFingerprint in CUSW_CARS:
+      elif self.CP.carFingerprint in CUSW_CARS | SUSW_CARS:
         if CS.out.vEgo < (self.CP.minSteerSpeed - 2.0):
           lkas_control_bit = False
 

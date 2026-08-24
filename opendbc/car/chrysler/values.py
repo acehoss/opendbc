@@ -81,6 +81,14 @@ class CAR(Platforms):
     [ChryslerCarDocs("Jeep Grand Cherokee 2019-21", video="https://www.youtube.com/watch?v=jBe4lWnRSu4")],
     JEEP_GRAND_CHEROKEE.specs,
   )
+  # TODO: mass/wheelbase/steerRatio/minSteerSpeed are unvalidated placeholders for the FCA small-wide (SUSW) platform
+  JEEP_RENEGADE = ChryslerPlatformConfig(
+    [ChryslerCarDocs("Jeep Renegade 2023", package="Adaptive Cruise Control (ACC) & LaneSense")],
+    ChryslerCarSpecs(mass=1509., wheelbase=2.570, steerRatio=15.7, minSteerSpeed=16.7),
+    # Bus.pt is the camera-side powertrain bus (bus 0), Bus.adas is the private fusion bus (bus 1) that
+    # a gateway populates with the three raw CAN C ACC messages. Same DBC, parsed on two buses.
+    {Bus.pt: 'chrysler_susw', Bus.adas: 'chrysler_susw'},
+  )
 
   # Ram
   RAM_1500_5TH_GEN = ChryslerPlatformConfig(
@@ -115,6 +123,13 @@ class CarControllerParams:
       self.STEER_DELTA_UP = 4
       self.STEER_DELTA_DOWN = 4
       self.STEER_MAX = 250  # TODO: Some CUSW will go to 261, some not quite, exact boundaries not yet determined
+    elif CP.carFingerprint in SUSW_CARS:
+      # TODO: placeholders carried over from CUSW, the SUSW EPS limits have not been probed yet.
+      # Observed stock LKAS_COMMAND torque on the Renegade spans -289..+309.
+      self.STEER_STEP = 1  # 100 Hz
+      self.STEER_DELTA_UP = 4
+      self.STEER_DELTA_DOWN = 4
+      self.STEER_MAX = 250
     else:
       self.STEER_DELTA_UP = 3
       self.STEER_DELTA_DOWN = 3
@@ -127,6 +142,7 @@ RAM_DT = {CAR.RAM_1500_5TH_GEN, }
 RAM_HD = {CAR.RAM_HD_5TH_GEN, }
 RAM_CARS = RAM_DT | RAM_HD
 CUSW_CARS = {CAR.JEEP_CHEROKEE_5TH_GEN, }
+SUSW_CARS = {CAR.JEEP_RENEGADE, }
 
 
 CHRYSLER_VERSION_REQUEST = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER]) + \
