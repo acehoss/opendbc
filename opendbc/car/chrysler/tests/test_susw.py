@@ -65,6 +65,9 @@ DOOR_FR_OPEN = "0080000000000000"
 EPS_1_SENTINEL = "ffff9fff0046"          # STEERING_ANGLE raw 0x3fff, STEERING_RATE raw 0xfff
 EPS_2_SATURATED = "41d300080008e8"       # DRIVER_TORQUE raw 0, the signed code minimum
 EPS_2_QUIET = "7d638168000794"           # DRIVER_TORQUE 11, TORQUE_MOTOR 6
+# LKA_FAULT was 0 on 100 % of 674k captured frames, so this frame is packed, not recorded:
+# EPS_2_QUIET with LKA_FAULT forced to 1 and the checksum recomputed.
+EPS_2_LKA_FAULT = "7d63816880075d"
 
 # Frames backing the DBC scale/sign corrections, all from route e7
 EPS_1_AT_REST = "1c6697d00153"           # t=100.0, stationary, STEERING_RATE raw 2000
@@ -133,6 +136,7 @@ class TestSuswCarState(SuswTestBase):
     self.assertEqual(CS.steeringTorque, -125)      # EPS_2.DRIVER_TORQUE
     self.assertEqual(CS.steeringTorqueEps, -9)     # EPS_2.TORQUE_MOTOR
     self.assertTrue(CS.steeringPressed)            # |125| > STEER_THRESHOLD
+    self.assertFalse(CS.steerFaultTemporary)
     self.assertFalse(CS.steerFaultPermanent)
 
     self.assertFalse(CS.brakePressed)
@@ -184,6 +188,13 @@ class TestSuswCarState(SuswTestBase):
         CS = self.update(DRIVING | {"SEATBELT_STATUS": frame})
         self.assertEqual(CS.seatbeltUnlatched, unlatched)
 
+  def test_lka_fault_is_temporary(self):
+    # never observed asserting, so it is wired to the recoverable fault: steerFaultPermanent
+    # latches steerUnavailable for the whole ignition cycle
+    CS = self.update(DRIVING | {"EPS_2": EPS_2_LKA_FAULT})
+    self.assertTrue(CS.steerFaultTemporary)
+    self.assertFalse(CS.steerFaultPermanent)
+
   def test_gear_shifter(self):
     # GEAR_2 (0x5a9) is on CAN CH, so P and N are reachable without forwarding GEAR 0x190
     cases = (
@@ -197,6 +208,13 @@ class TestSuswCarState(SuswTestBase):
       with self.subTest(frame=frame):
         self.setUp()
         self.assertEqual(self.update(DRIVING | {"GEAR_2": frame}).gearShifter, gear)
+
+    # P and N are real now, so openpilot can tell it is not in a drivable gear (wrongGear) instead
+    # of believing it is in drive. Chrysler adds only `low` to the drivable set.
+    drivable = (GearShifter.drive,) + CarInterface.DRIVABLE_GEARS
+    self.assertFalse(GearShifter.park in drivable)
+    self.assertFalse(GearShifter.neutral in drivable)
+    self.assertTrue(GearShifter.drive in drivable)
 
   def test_parking_brake(self):
     for frame, engaged in ((GEAR2_PB_ENGAGED, True), (GEAR2_PB_RELEASED, False)):
@@ -469,20 +487,20 @@ class TestSuswCarController(SuswTestBase):
   def test_steer_limits(self):
     params = CarControllerParams(self.CP)
     self.assertEqual(params.STEER_STEP, 1)               # 100 Hz, like the stock camera
-    self.assertEqual(params.STEER_DELTA_UP, 6)           # measured stock per-frame max delta
-    self.assertEqual(params.STEER_DELTA_DOWN, 6)
+    self.assertEqual(params.STEER_DELTA_UP, 5)           # one count under the measured stock max
+    self.assertEqual(params.STEER_DELTA_DOWN, 6)         # release at the stock rate
     self.assertEqual(params.STEER_MAX, 250)              # stock reaches 383, we stay conservative
 
   def test_driver_torque_limiting(self):
     # SUSW limits against DRIVER_TORQUE, so driver torque opposing the command clamps it
     params = CarControllerParams(self.CP)
-    self.assertEqual(params.STEER_DRIVER_ALLOWANCE, 100)
-    self.assertEqual(params.STEER_DRIVER_MULTIPLIER, 2)
+    self.assertEqual(params.STEER_DRIVER_ALLOWANCE, 80)
+    self.assertEqual(params.STEER_DRIVER_MULTIPLIER, 3)
     self.assertEqual(params.STEER_DRIVER_FACTOR, 1)
 
-    # DRIVING carries DRIVER_TORQUE = -125, so max allowed = 250 + (100 - 125) * 2 = 200
     torques = [dat[0] << 3 | dat[1] >> 5 for dat in self._lkas(self._run(400, 20., torque=1.0))]
-    self.assertEqual(max(t - 1024 for t in torques), 200)
+    # DRIVING carries DRIVER_TORQUE = -125, so max allowed = 250 + (80 - 125) * 3 = 115
+    self.assertEqual(max(t - 1024 for t in torques), 115)
 
   def test_control_bit_below_min_steer_speed(self):
     # the control bit never comes on below the stock LaneSense drop-out speed, however long we drive
