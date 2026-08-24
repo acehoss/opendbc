@@ -3,7 +3,7 @@ import unittest
 from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
-from opendbc.car.chrysler.chryslercan import create_lkas_command
+from opendbc.car.chrysler.chryslercan import create_comma_heartbeat, create_lkas_command
 from opendbc.car.chrysler.interface import CarInterface
 from opendbc.car.chrysler.values import CAR, CarControllerParams
 
@@ -16,6 +16,7 @@ PT_ADDRS = {"EPS_1": 0xde, "ABS_1": 0xee, "ABS_3": 0xfa, "ENGINE_1": 0xfc,
             "ABS_6": 0x101, "EPS_2": 0x106, "ACCEL_PEDAL_DRIVER": 0x1f0,
             "DOORS": 0x4b1, "STEERING_LEVERS": 0x73e}
 ADAS_ADDRS = {"ACC_STATUS_1": 0x103, "CRUISE_BUTTONS": 0x2fa, "ACC_HUD": 0x73c}
+CAM_ADDRS = {"LKA_HUD_2": 0x547}
 
 # All raw frames below were captured from the 2023 Jeep Renegade on route
 # 873a474e9ad72abb|000000e7--c05680fea1 and its paired raw CAN C capture.
@@ -62,6 +63,11 @@ ABS_5_REVERSE = "15130f0ffa000822"       # t=890.2, 0.5 m/s in reverse
 PEDAL_PRESSED = "0440000000000000"       # t=564.6, 13.872 %, the peak of the press
 PEDAL_BARELY_PRESSED = "0020000000000000"  # t=566.8, 0.408 %, one count
 
+# LKA_HUD_2 from the camera on bus 2, LaneSense state in byte 3 bit 6
+LANESENSE_ON_GREY = "0000000000400200"     # LaneSense on, no lanes acquired
+LANESENSE_ON_GREEN = "0000000000400c00"    # LaneSense on, lanes acquired and armed
+LANESENSE_OFF = "0000004000400000"         # LaneSense switched off (route 00000003 t=196.5)
+
 # ACC messages, raw CAN C
 ACC_OFF = "000003e80000082b"            # ACC_STATUS_1, ACC_ENGAGED = 0
 ACC_ENGAGED = "0000200200000c70"        # ACC_STATUS_1, ACC_ENGAGED = 1
@@ -84,9 +90,10 @@ class SuswTestBase(unittest.TestCase):
     self.CI = CarInterface(self.CP)
     self.nanos = 0
 
-  def update(self, pt: dict | None = None, adas: dict | None = None) -> structs.CarState:
+  def update(self, pt: dict | None = None, adas: dict | None = None, cam: dict | None = None) -> structs.CarState:
     frames = [CanData(PT_ADDRS[n], bytes.fromhex(h), 0) for n, h in (pt or {}).items()]
     frames += [CanData(ADAS_ADDRS[n], bytes.fromhex(h), 1) for n, h in (adas or {}).items()]
+    frames += [CanData(CAM_ADDRS[n], bytes.fromhex(h), 2) for n, h in (cam or {}).items()]
     self.nanos += int(DT_CTRL * 1e9)
     return self.CI.update([(self.nanos, frames)])
 
@@ -199,6 +206,27 @@ class TestSuswCarState(SuswTestBase):
         self.assertAlmostEqual(CS.cruiseState.speed, speed, places=4)
         self.assertFalse(CS.cruiseState.nonAdaptive)
 
+  def test_engagement_needs_lanesense(self):
+    # G3: openpilot is active only while ACC is engaged AND LaneSense is on
+    engaged = {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}
+    cases = (
+      (LANESENSE_ON_GREY, True),
+      (LANESENSE_ON_GREEN, True),
+      (LANESENSE_OFF, False),
+    )
+    for hud, enabled in cases:
+      with self.subTest(hud=hud):
+        self.setUp()
+        CS = self.update(DRIVING, engaged, {"LKA_HUD_2": hud})
+        self.assertEqual(CS.cruiseState.enabled, enabled)
+        # availability is the stock ACC state and is unaffected by LaneSense
+        self.assertTrue(CS.cruiseState.available)
+
+    # LaneSense on but ACC not engaged is also inactive
+    self.setUp()
+    CS = self.update(DRIVING, engaged | {"ACC_STATUS_1": ACC_OFF}, {"LKA_HUD_2": LANESENSE_ON_GREEN})
+    self.assertFalse(CS.cruiseState.enabled)
+
   def test_button_events(self):
     cases = (
       (BTN_MAIN, ButtonType.mainCruise),
@@ -248,6 +276,21 @@ class TestSuswLkasCommand(unittest.TestCase):
         self.assertEqual(bus, 0)
         self.assertEqual(dat.hex(), expected)
 
+  def test_comma_heartbeat(self):
+    packer = CANPacker("chrysler_susw")
+    # bus 1, the private fusion bus. CANPacker fills the FCA CRC-8 over bytes 0-6.
+    self.assertEqual(create_comma_heartbeat(packer, 5, False), (0x5f0, b"\x01\x00\x00\x00\x00\x00\x05\x3e", 1))
+    self.assertEqual(create_comma_heartbeat(packer, 5, True), (0x5f0, b"\x03\x00\x00\x00\x00\x00\x05\x84", 1))
+    # the counter wraps at 16
+    self.assertEqual(create_comma_heartbeat(packer, 21, False)[1], create_comma_heartbeat(packer, 5, False)[1])
+
+    # the packed frame round-trips through the parser, checksum and counter included
+    cp = CANParser("chrysler_susw", [("COMMA_HEARTBEAT", 10)], 1)
+    cp.update([(0, [create_comma_heartbeat(packer, 5, True)])])
+    self.assertEqual(cp.vl["COMMA_HEARTBEAT"]["OPENPILOT_ALIVE"], 1)
+    self.assertEqual(cp.vl["COMMA_HEARTBEAT"]["LAT_ACTIVE"], 1)
+    self.assertEqual(cp.vl["COMMA_HEARTBEAT"]["COUNTER"], 5)
+
   def test_control_bit_is_one(self):
     # RAM uses 2 in LKAS_CONTROL_BIT, SUSW (like CUSW) uses 1
     self.packer.counters[0x1f6] = 0
@@ -275,11 +318,26 @@ class TestSuswCarController(SuswTestBase):
       sent.append(can_sends)
     return sent
 
-  def test_only_lkas_command_is_sent(self):
-    # no cruise button TX and no HUD TX for SUSW, even when the controller asks to cancel and resume
+  def test_only_lkas_command_and_heartbeat_are_sent(self):
+    # no cruise button TX and no HUD TX for SUSW, even when the controller asks to cancel and resume.
+    # LKAS_COMMAND on bus 0 every frame, COMMA_HEARTBEAT on bus 1 every 10th frame, nothing else.
     sent = self._run(300, 20., cancel=True, resume=True)
-    for can_sends in sent:
-      self.assertEqual([(addr, bus) for addr, _, bus in can_sends], [(0x1f6, 0)])
+    for frame, can_sends in enumerate(sent):
+      expected = [(0x1f6, 0)] + ([(0x5f0, 1)] if frame % 10 == 0 else [])
+      self.assertEqual(sorted((addr, bus) for addr, _, bus in can_sends), sorted(expected))
+
+    heartbeats = [dat for can_sends in sent for addr, dat, _ in can_sends if addr == 0x5f0]
+    self.assertEqual(len(heartbeats), 30)                            # 300 frames at 100 Hz -> 10 Hz
+    self.assertTrue(all(dat[0] & 0x01 for dat in heartbeats))        # OPENPILOT_ALIVE always set
+    self.assertEqual([dat[6] & 0xf for dat in heartbeats], [c % 16 for c in range(30)])
+
+  def test_heartbeat_is_sent_when_inactive(self):
+    # the gateway opt-in does not depend on openpilot being engaged
+    sent = self._run(30, 20., lat_active=False)
+    heartbeats = [dat for can_sends in sent for addr, dat, _ in can_sends if addr == 0x5f0]
+    self.assertEqual(len(heartbeats), 3)
+    self.assertTrue(all(dat[0] & 0x01 for dat in heartbeats))
+    self.assertFalse(any(dat[0] & 0x02 for dat in heartbeats))       # LAT_ACTIVE clear
 
   def test_steer_limits(self):
     params = CarControllerParams(self.CP)
@@ -296,17 +354,15 @@ class TestSuswCarController(SuswTestBase):
     self.assertEqual(params.STEER_DRIVER_FACTOR, 1)
 
     # DRIVING carries DRIVER_TORQUE = -125, so max allowed = 250 + (100 - 125) * 2 = 200
-    torques = [dat[0] << 3 | dat[1] >> 5 for can_sends in self._run(400, 20., torque=1.0) for _, dat, _ in can_sends]
+    torques = [dat[0] << 3 | dat[1] >> 5 for dat in self._lkas(self._run(400, 20., torque=1.0))]
     self.assertEqual(max(t - 1024 for t in torques), 200)
 
   def test_control_bit_below_min_steer_speed(self):
     # the control bit never comes on below the stock LaneSense drop-out speed, however long we drive
-    sent = self._run(400, self.CP.minSteerSpeed - 1.5)
-    self.assertTrue(all(dat[1] & 0x10 == 0 for can_sends in sent for _, dat, _ in can_sends))
+    self.assertFalse(any(self._control_bits(self._run(400, self.CP.minSteerSpeed - 1.5))))
 
     # ...and it does come on above minSteerSpeed, once the re-enable guard has expired
-    sent = self._run(400, self.CP.minSteerSpeed + 1.0)
-    self.assertEqual(sent[-1][0][1][1] & 0x10, 0x10)
+    self.assertTrue(self._control_bits(self._run(400, self.CP.minSteerSpeed + 1.0))[-1])
 
   def test_min_steer_speed_hysteresis(self):
     # stock arms at 16.0 m/s and drops out at 14.9 m/s: 15.5 m/s must not drop an already armed bit
@@ -328,8 +384,13 @@ class TestSuswCarController(SuswTestBase):
     self.assertTrue(all(bits[200:]))
 
   @staticmethod
-  def _control_bits(sent):
-    return [bool(dat[1] & 0x10) for can_sends in sent for _, dat, _ in can_sends]
+  def _lkas(sent):
+    """The LKAS_COMMAND payloads only, dropping the interleaved 10 Hz heartbeat."""
+    return [dat for can_sends in sent for addr, dat, _ in can_sends if addr == 0x1f6]
+
+  @classmethod
+  def _control_bits(cls, sent):
+    return [bool(dat[1] & 0x10) for dat in cls._lkas(sent)]
 
 
 class TestSuswDbc(unittest.TestCase):
