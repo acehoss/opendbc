@@ -14,7 +14,8 @@ GearShifter = structs.CarState.GearShifter
 # Bus 0 is the camera-side "CAN CH" bus, bus 1 is the private fusion bus fed by the gateway.
 PT_ADDRS = {"EPS_1": 0xde, "ABS_1": 0xee, "ABS_3": 0xfa, "ENGINE_1": 0xfc,
             "ABS_6": 0x101, "EPS_2": 0x106, "ACCEL_PEDAL_DRIVER": 0x1f0,
-            "DOORS": 0x4b1, "STEERING_LEVERS": 0x73e}
+            "SEATBELT_STATUS": 0x257, "DOORS": 0x4b1, "GEAR_2": 0x5a9,
+            "STEERING_LEVERS": 0x73e}
 ADAS_ADDRS = {"ACC_STATUS_1": 0x103, "CRUISE_BUTTONS": 0x2fa, "ACC_HUD": 0x73c}
 CAM_ADDRS = {"LKA_HUD_2": 0x547}
 
@@ -31,6 +32,8 @@ DRIVING = {
   "ABS_6": "00754000000000ba",
   "EPS_2": "7c737060400b15",
   "ACCEL_PEDAL_DRIVER": "0000000000000000",
+  "SEATBELT_STATUS": "01fe104000000000",   # driver belt latched
+  "GEAR_2": "000c800000000000",            # D, parking brake released
   "DOORS": "0000000000000000",
   "STEERING_LEVERS": "00000000",
 }
@@ -38,6 +41,19 @@ DRIVING = {
 # Isolated parked body-state sweep
 BRAKE_PRESSED = "7c200000080800c7"      # ABS_3 with BRAKE_PEDAL_SWITCH set
 REVERSE = "0e10c0060841ee74"            # ENGINE_1 in reverse, accelerator released
+
+# 0x257 driver seatbelt, from the narrated latch/unlatch/latch block at 202.7 / 212.4 / 218.3 s
+BELT_LATCHED = "01fe104000000000"       # t=205.1, byte 2 = 0x10
+BELT_UNLATCHED = "01fe304000000000"     # t=214.0, byte 2 = 0x30
+
+# 0x5a9 gear and parking brake, from the parked PRNDL sweep (marks 124-127) and the brake sweep
+GEAR2_P = "008c200000000000"            # t=462.9
+GEAR2_R = "008c400000000000"            # t=467.9
+GEAR2_N = "008c600000000000"            # t=472.9
+GEAR2_D = "008c800000000000"            # t=477.9
+GEAR2_MANUAL = "008cc00000000000"       # route 000000d8 t=557.0, the AutoStick gate
+GEAR2_PB_ENGAGED = "058c200000000000"   # t=494.8, byte 1 = 0x8c
+GEAR2_PB_RELEASED = "000c200000000000"  # t=498.9, byte 1 = 0x0c
 LEVERS_LEFT = "00000200"
 LEVERS_RIGHT = "00000100"
 LEVERS_HAZARDS = "00000300"
@@ -129,10 +145,12 @@ class TestSuswCarState(SuswTestBase):
     self.assertFalse(self.CP.enableBsm)
 
   def test_brake_and_reverse(self):
-    CS = self.update(DRIVING | {"ABS_3": BRAKE_PRESSED, "ENGINE_1": REVERSE})
+    CS = self.update(DRIVING | {"ABS_3": BRAKE_PRESSED, "ENGINE_1": REVERSE, "GEAR_2": GEAR2_R})
     self.assertTrue(CS.brakePressed)
     self.assertFalse(CS.gasPressed)
     self.assertEqual(CS.gearShifter, GearShifter.reverse)
+    # ENGINE_1.REVERSE is only a cross-check now, but it must still agree
+    self.assertTrue(self.CI.can_parsers[Bus.pt].vl["ENGINE_1"]["REVERSE"])
 
   def test_gas_pressed_is_driver_only(self):
     # the ACC-engaged frame pair: the PCM commands 5.6 % throttle with the driver's foot off the pedal
@@ -156,6 +174,33 @@ class TestSuswCarState(SuswTestBase):
         CS = self.update(DRIVING | {"STEERING_LEVERS": levers})
         self.assertEqual(CS.leftBlinker, left)
         self.assertEqual(CS.rightBlinker, right)
+
+  def test_seatbelt(self):
+    for frame, unlatched in ((BELT_LATCHED, False), (BELT_UNLATCHED, True)):
+      with self.subTest(frame=frame):
+        self.setUp()
+        CS = self.update(DRIVING | {"SEATBELT_STATUS": frame})
+        self.assertEqual(CS.seatbeltUnlatched, unlatched)
+
+  def test_gear_shifter(self):
+    # GEAR_2 (0x5a9) is on CAN CH, so P and N are reachable without forwarding GEAR 0x190
+    cases = (
+      (GEAR2_P, GearShifter.park),
+      (GEAR2_R, GearShifter.reverse),
+      (GEAR2_N, GearShifter.neutral),
+      (GEAR2_D, GearShifter.drive),
+      (GEAR2_MANUAL, GearShifter.manumatic),
+    )
+    for frame, gear in cases:
+      with self.subTest(frame=frame):
+        self.setUp()
+        self.assertEqual(self.update(DRIVING | {"GEAR_2": frame}).gearShifter, gear)
+
+  def test_parking_brake(self):
+    for frame, engaged in ((GEAR2_PB_ENGAGED, True), (GEAR2_PB_RELEASED, False)):
+      with self.subTest(frame=frame):
+        self.setUp()
+        self.assertEqual(self.update(DRIVING | {"GEAR_2": frame}).parkingBrake, engaged)
 
   def test_doors(self):
     for doors, expected in ((DOOR_FL_OPEN, True), (DOOR_FR_OPEN, True), ("0000000000000000", False)):
@@ -424,6 +469,27 @@ class TestSuswDbc(unittest.TestCase):
     self.assertLess(right["LATERAL_ACCEL"], 0)
     self.assertLess(right["YAW_RATE"], 0)
     self.assertAlmostEqual(right["YAW_RATE"], -0.4324, places=4)
+
+  def test_parking_brake_polarity(self):
+    # raw-C PARKING_BRAKE_STATUS 0x256 bit 3 is 1 = ENGAGED (the earlier reading was inverted)
+    engaged = self._decode("PARKING_BRAKE_STATUS", 0x256, "a882010000400000")
+    self.assertEqual(engaged["PARKING_BRAKE_ENGAGED"], 1)
+    released = self._decode("PARKING_BRAKE_STATUS", 0x256, "0000010000400000")
+    self.assertEqual(released["PARKING_BRAKE_ENGAGED"], 0)
+
+    # the two CAN CH copies must agree with it frame for frame
+    for pb, gear2, lanesense in ((1, GEAR2_PB_ENGAGED, "081dbc0800000000"),
+                                 (0, GEAR2_PB_RELEASED, "081dbc0000000000")):
+      with self.subTest(engaged=pb):
+        self.assertEqual(self._decode("GEAR_2", 0x5a9, gear2)["PARKING_BRAKE_ENGAGED"], pb)
+        self.assertEqual(self._decode("LANESENSE_BUTTON", 0x384, lanesense)["PARKING_BRAKE_ENGAGED_2"], pb)
+
+  def test_low_beam(self):
+    # byte 3 bit 7, reported alongside the parking brake in the same byte
+    lit = self._decode("LANESENSE_BUTTON", 0x384, "081dbc8800000000")   # t=395.3, lamps lit
+    self.assertEqual((lit["LOW_BEAM"], lit["PARKING_BRAKE_ENGAGED_2"]), (1, 1))
+    out = self._decode("LANESENSE_BUTTON", 0x384, "081dbc0800000000")   # t=405.2, auto, daytime
+    self.assertEqual((out["LOW_BEAM"], out["PARKING_BRAKE_ENGAGED_2"]), (0, 1))
 
   def test_abs_5_moving_and_direction(self):
     # bits 36-39 are a vehicle-moving flag, not a direction pair

@@ -43,6 +43,10 @@ class CarState(CarStateBase):
 
     if CP.carFingerprint in RAM_CARS:
       self.shifter_values = can_define.dv["Transmission_Status"]["Gear_State"]
+    elif CP.carFingerprint in SUSW_CARS:
+      # GEAR (0x190) is raw CAN C only. GEAR_2 (0x5a9) is the CH-side gear report, same enum,
+      # 99.775 % frame agreement with 0x190, and it is visible to the comma without forwarding.
+      self.shifter_values = can_define.dv["GEAR_2"]["PRNDL"]
     else:
       self.shifter_values = can_define.dv["GEAR"]["PRNDL"]
 
@@ -184,8 +188,10 @@ class CarState(CarStateBase):
     # Only the two front doors are decoded on this platform, the rear-door bits in 0x4b1 are unknown
     ret.doorOpen = any([cp.vl["DOORS"]["DOOR_OPEN_FL"],
                         cp.vl["DOORS"]["DOOR_OPEN_FR"]])
-    # TODO: seatbelt state is not decoded yet, several raw CAN C messages react but no isolated driver boolean was found
-    ret.seatbeltUnlatched = False
+    # Driver belt only: the passenger belt moves no bit on either bus in the captured sweep.
+    # Byte 2 reads 0xff for a few frames after ignition-off, which decodes as unlatched - the safe
+    # direction, and the car is off by then.
+    ret.seatbeltUnlatched = bool(cp.vl["SEATBELT_STATUS"]["SEATBELT_DRIVER_UNLATCHED"])
 
     ret.brakePressed = bool(cp.vl["ABS_3"]["BRAKE_PEDAL_SWITCH"])
     # ENGINE_1.THROTTLE_VIRTUAL is the PCM's resolved demand (driver OR ACC), so it reads > 0 on 97.5 %
@@ -204,9 +210,11 @@ class CarState(CarStateBase):
     ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
     ret.standstill = not ret.vEgoRaw > 0.001
 
-    # PRNDL lives in GEAR (0x190), which is raw CAN C only and not visible to the comma.
-    # ENGINE_1.REVERSE is the only gear information on the camera bus.
-    ret.gearShifter = structs.CarState.GearShifter.reverse if cp.vl["ENGINE_1"]["REVERSE"] else structs.CarState.GearShifter.drive
+    # GEAR_2.PRNDL (0x5a9) gives real P/R/N/D/MANUAL on CH. ENGINE_1.REVERSE is kept only as a
+    # cross-check: it is high over exactly the reverse window. A single frame in 6,740 s of capture
+    # reads 0 mid-shift and maps to unknown, same as upstream does for other platforms.
+    ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(cp.vl["GEAR_2"]["PRNDL"], None))
+    ret.parkingBrake = bool(cp.vl["GEAR_2"]["PARKING_BRAKE_ENGAGED"])
 
     # 1 right, 2 left, 3 hazards
     turn_signals = cp.vl["STEERING_LEVERS"]["TURN_SIGNALS"]
@@ -258,6 +266,8 @@ class CarState(CarStateBase):
         ("ABS_3", 100),
         ("ENGINE_1", 100),
         ("ACCEL_PEDAL_DRIVER", 50),
+        ("SEATBELT_STATUS", 10),
+        ("GEAR_2", 1),            # 1 Hz plus on change
         ("ABS_6", 100),
         ("EPS_2", 100),
         ("DOORS", 2),             # 2 Hz plus on change

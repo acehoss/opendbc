@@ -22,7 +22,15 @@ class TestChryslerCan(unittest.TestCase):
     assert packer.make_can_msg("DOORS", 0, {"DOOR_OPEN_FR": 1})[1] == b"\x00\x80\x00\x00\x00\x00\x00\x00"
     assert packer.make_can_msg("BSM_1", 0, {"RIGHT_STATUS": 1})[1] == b"\x00\x10\x00\x00\x00\x00\x00\x00"
     assert packer.make_can_msg("BSM_1", 0, {"LEFT_STATUS": 1})[1] == b"\x00\x20\x00\x00\x00\x00\x00\x00"
-    assert packer.make_can_msg("PARKING_BRAKE_STATUS", 0, {"PARKING_BRAKE_RELEASED": 1})[1] == b"\x08\x00\x00\x00\x00\x00\x00\x00"
+    assert packer.make_can_msg("PARKING_BRAKE_STATUS", 0, {"PARKING_BRAKE_ENGAGED": 1})[1] == b"\x08\x00\x00\x00\x00\x00\x00\x00"
+    assert packer.make_can_msg("SEATBELT_STATUS", 0, {"SEATBELT_DRIVER_UNLATCHED": 1})[1] == b"\x00\x00\x20\x00\x00\x00\x00\x00"
+    assert packer.make_can_msg("GEAR_2", 0, {"PARKING_BRAKE_ENGAGED": 1})[1] == b"\x00\x80\x00\x00\x00\x00\x00\x00"
+    assert packer.make_can_msg("LANESENSE_BUTTON", 0, {"PARKING_BRAKE_ENGAGED_2": 1})[1] == b"\x00\x00\x00\x08\x00\x00\x00\x00"
+    assert packer.make_can_msg("LANESENSE_BUTTON", 0, {"LOW_BEAM": 1})[1] == b"\x00\x00\x00\x80\x00\x00\x00\x00"
+
+    for gear, raw in enumerate((0x20, 0x40, 0x60, 0x80), start=1):
+      assert packer.make_can_msg("GEAR_2", 0, {"PRNDL": gear})[1] == bytes([0, 0, raw, 0, 0, 0, 0, 0])
+    assert packer.make_can_msg("GEAR_2", 0, {"PRNDL": 6})[1] == b"\x00\x00\xc0\x00\x00\x00\x00\x00"
 
     for state in range(6, 14):
       assert packer.make_can_msg("ACC_HUD", 0, {"ACC_GAP_LEAD_STATE": state})[1] == bytes([0, 0, 0, 0, 0, 0, state, 0])
