@@ -76,20 +76,53 @@
 // evidence-backed direction detects a stuck-closed relay just as reliably.
 //
 // Add the radar-side probe once the first successful INTERCEPT capture attributes
-// senders directly: with the halves split, whatever is received on bus 2 is by
-// construction radar-originated, so one parked INTERCEPT run settles it and the
-// second entry becomes a one-line addition to the table below.
+// senders directly: with the halves split, whatever is received on the radar-side
+// bus is by construction radar-originated, so one parked INTERCEPT run settles it
+// and the second entry becomes a one-line addition to the tables below.
+//
+// *** What is proven and what is assumed about the bus map ***
+//
+// Assumed: that logical bus 0 is the body half of XY005A. can_set_orientation()
+// swaps bus_lookup/can_num_lookup for indices 0 and 2 so that logical bus 0 is
+// always the harness box's CAN0 net, and the crimp map puts the body half on
+// CAN0 (P4/P6) -- but that chain has not been confirmed on this vehicle with this
+// custom Y-cable, and the RPGW report lists it as an open question.
+//
+// Why that matters here: if the map is inverted, ABS_1 and EPS_1 arrive on the
+// radar-side bus during a *healthy* intercept and stock_ecu_check() latches
+// relay_malfunction about a second in. Two things bound the damage. The bus is
+// now a parameter rather than a literal, so correcting the map is a one-constant
+// change on the firmware side. And relay_malfunction no longer pins BYPASS for
+// the rest of the power cycle: the firmware's preconditions test the live `faults`
+// bitmask instead of the sticky `fault_status`, so the flag clears when
+// set_safety_hooks() runs on the way out and the gateway retries after its
+// hold-off -- bounded by the bypass-cycle latch, so it cannot chatter either.
+// param is the *resolved radar-side logical bus*, passed by the firmware's
+// gateway_enter() (panda/board/gateway.h) from the same variable that drives the
+// fusion copy. It is not a hard-coded 2 here because the whole probe depends on
+// which half of the intercept is which, and that must have exactly one source of
+// truth: if the bus map is ever found inverted, the firmware changes one constant
+// and the copy and the probe both follow. Any value other than 0 means bus 2.
 static safety_config susw_gateway_init(uint16_t param) {
-  static const CanMsg SUSW_GATEWAY_TX_MSGS[] = {
+  // radar side = logical bus 2 (the nominal map)
+  static const CanMsg SUSW_GATEWAY_TX_MSGS_RADAR_2[] = {
     // ABS_1, ~100 Hz, from the ABS module on the body side
     {0x0EEU, 2, 8, .check_relay = true, .disable_static_blocking = true},
     // EPS_1, ~100 Hz, from the EPS on the body side
     {0x0DEU, 2, 6, .check_relay = true, .disable_static_blocking = true},
   };
+  // radar side = logical bus 0 (an inverted map)
+  static const CanMsg SUSW_GATEWAY_TX_MSGS_RADAR_0[] = {
+    {0x0EEU, 0, 8, .check_relay = true, .disable_static_blocking = true},
+    {0x0DEU, 0, 6, .check_relay = true, .disable_static_blocking = true},
+  };
 
-  SAFETY_UNUSED(param);
   safety_config ret = {NULL, 0, NULL, 0, false};  // NOLINT(readability/braces)
-  SET_TX_MSGS(SUSW_GATEWAY_TX_MSGS, ret);
+  if (param == 0U) {
+    SET_TX_MSGS(SUSW_GATEWAY_TX_MSGS_RADAR_0, ret);
+  } else {
+    SET_TX_MSGS(SUSW_GATEWAY_TX_MSGS_RADAR_2, ret);
+  }
   return ret;
 }
 

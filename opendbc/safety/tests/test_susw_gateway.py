@@ -20,6 +20,9 @@ PROBE_ADDRS = {0x0EE: 8, 0x0DE: 6}
 PROBE_BUS = 2      # the bus they must NOT appear on
 PROBE_HOME_BUS = 0  # where they legitimately live
 
+# init param = the resolved radar-side logical bus. 2 is the nominal map.
+RADAR_BUS_PARAM = 2
+
 
 class TestSuswGateway(common.SafetyTest):
   """SAFETY_SUSW_GATEWAY: transparent bidirectional CAN C gateway, no host TX, no controls."""
@@ -34,7 +37,7 @@ class TestSuswGateway(common.SafetyTest):
 
   def setUp(self):
     self.safety = libsafety_py.libsafety
-    self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, RADAR_BUS_PARAM)
     self.safety.init_tests()
 
   # ***** mode is registered and selectable *****
@@ -44,10 +47,24 @@ class TestSuswGateway(common.SafetyTest):
 
   def test_init_succeeds(self):
     # set_safety_hooks returns 0 when the mode id was found in the registry
-    self.assertEqual(self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0), 0)
+    self.assertEqual(self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, RADAR_BUS_PARAM), 0)
 
-  def test_init_ignores_param(self):
-    # the gateway takes no parameters; every param must behave identically
+  def test_param_selects_the_radar_side_bus(self):
+    # param is the resolved radar-side logical bus, so the relay probe follows the
+    # firmware's bus map instead of assuming one
+    for param, radar_bus in ((0, 0), (2, 2), (1, 2), (0xFFFF, 2)):
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, param)
+      self.safety.init_tests()
+      body_bus = 2 if radar_bus == 0 else 0
+      for addr, length in PROBE_ADDRS.items():
+        self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, param)
+        self.safety.init_tests()
+        self._rx(common.make_msg(body_bus, addr, length))
+        self.assertFalse(self.safety.get_relay_malfunction(), f"{param=} {addr=:#x} on the body half")
+        self._rx(common.make_msg(radar_bus, addr, length))
+        self.assertTrue(self.safety.get_relay_malfunction(), f"{param=} {addr=:#x} on the radar half")
+
+  def test_param_never_changes_forwarding_or_tx(self):
     for param in (0, 1, 2, 0xFFFF):
       self.assertEqual(self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, param), 0)
       self.assertEqual(self.safety.safety_fwd_hook(0, 0x103), 2)
@@ -135,7 +152,7 @@ class TestSuswGateway(common.SafetyTest):
   def test_probe_on_radar_half_sets_relay_malfunction(self):
     # a body-side frame heard on the radar half means the DG419 pair did not open
     for addr, length in PROBE_ADDRS.items():
-      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, RADAR_BUS_PARAM)
       self.safety.init_tests()
       self.assertFalse(self.safety.get_relay_malfunction())
       self._rx(common.make_msg(PROBE_BUS, addr, length))
@@ -145,7 +162,7 @@ class TestSuswGateway(common.SafetyTest):
     # stock_ecu_check() matches on addr+bus only, so a wrong-DLC impostor of a
     # body frame on the radar half still counts as "the halves are joined"
     for addr in PROBE_ADDRS:
-      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, RADAR_BUS_PARAM)
       self.safety.init_tests()
       self._rx(common.make_msg(PROBE_BUS, addr, 4))
       self.assertTrue(self.safety.get_relay_malfunction(), f"{addr=:#x}")
@@ -167,7 +184,7 @@ class TestSuswGateway(common.SafetyTest):
 
   def test_relay_malfunction_stops_everything(self):
     for addr, length in PROBE_ADDRS.items():
-      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, 0)
+      self.safety.set_safety_hooks(CarParams.SafetyModel.suswGateway, RADAR_BUS_PARAM)
       self.safety.init_tests()
       self._rx(common.make_msg(PROBE_BUS, addr, length))
       self.assertTrue(self.safety.get_relay_malfunction())
