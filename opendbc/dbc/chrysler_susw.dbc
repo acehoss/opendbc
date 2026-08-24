@@ -79,7 +79,7 @@ BO_ 496 ACCEL_PEDAL_DRIVER: 8 ENGINE
 
 BO_ 254 ABS_2: 8 ABS
  SG_ LONG_ACCEL : 7|12@0+ (0.01916,-39.24) [-39.24|39.22] "m/s2" XXX
- SG_ LATERAL_ACCEL : 11|12@0+ (0.01916,-39.24) [-39.24|39.22] "m/s2" XXX
+ SG_ LATERAL_ACCEL : 11|12@0+ (0.01916,-39.39) [-39.39|39.07] "m/s2" XXX
  SG_ YAW_RATE : 31|12@0+ (0.0014,-2.86) [-2.86|2.873] "rad/s" XXX
  SG_ UNKNOWN_BYTE5 : 47|8@0+ (1,0) [0|255] "" XXX
  SG_ UNKNOWN_B6_BIT7 : 55|1@0+ (1,0) [0|1] "" XXX
@@ -128,7 +128,7 @@ BO_ 262 EPS_2: 7 EPS
 
 BO_ 270 ABS_7: 7 ABS
  SG_ LONG_ACCEL_RAW : 7|12@0+ (0.01916,-39.24) [-39.24|39.22] "m/s2" XXX
- SG_ LATERAL_ACCEL_RAW : 11|12@0+ (0.01916,-39.24) [-39.24|39.22] "m/s2" XXX
+ SG_ LATERAL_ACCEL_RAW : 11|12@0+ (0.01916,-39.39) [-39.39|39.07] "m/s2" XXX
  SG_ YAW_RATE_RAW : 31|12@0+ (0.0014,-2.86) [-2.86|2.873] "rad/s" XXX
  SG_ COUNTER : 43|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 55|8@0+ (1,0) [0|255] "" XXX
@@ -232,45 +232,85 @@ BO_ 1852 ACC_HUD: 8 XXX
  SG_ ACC_HUD_BIT2 : 58|1@0+ (1,0) [0|1] "" XXX
 
 BO_ 512 RADAR_STATUS: 8 XXX
- SG_ FUSED_LEAD_PRESENT : 7|1@0+ (1,0) [0|1] "" XXX
+ SG_ LEAD_STATUS : 7|4@0+ (1,0) [0|15] "" XXX
  SG_ TIME_BASE : 31|16@0+ (1,0) [0|65535] "" XXX
  SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
+BO_ 672 RADAR_TRACK_1_EXT: 8 XXX
+ SG_ TRACK_PRESENT : 7|8@0+ (1,0) [0|255] "" XXX
+ SG_ TRACK_ID : 15|8@0+ (1,0) [0|255] "" XXX
+ SG_ INV_TTC : 23|8@0- (1,0) [-128|127] "" XXX
+ SG_ TRACK_MEASURED : 30|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_B3_BIT5 : 29|1@0+ (1,0) [0|1] "" XXX
+ SG_ LATERAL_ZONE : 28|3@0+ (1,0) [0|7] "" XXX
+ SG_ IN_PATH : 25|1@0+ (1,0) [0|1] "" XXX
+ SG_ EXT_RESERVED : 39|16@0+ (1,0) [0|65535] "" XXX
+ SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+
 BO_ 704 RADAR_TRACK_1: 8 XXX
- SG_ TRACK_FLAG_7 : 7|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_FLAG_6 : 6|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_VALID : 5|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_STATUS : 7|3@0+ (1,0) [0|7] "" XXX
  SG_ AZIMUTH_LO : 2|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ AZIMUTH_HI : 18|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ RANGE : 35|12@0+ (0.0625,0) [0|255.9375] "m" XXX
+ SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+
+BO_ 768 RADAR_TRACK_2_EXT: 8 XXX
+ SG_ TRACK_PRESENT : 7|8@0+ (1,0) [0|255] "" XXX
+ SG_ TRACK_ID : 15|8@0+ (1,0) [0|255] "" XXX
+ SG_ INV_TTC : 23|8@0- (1,0) [-128|127] "" XXX
+ SG_ TRACK_MEASURED : 30|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_B3_BIT5 : 29|1@0+ (1,0) [0|1] "" XXX
+ SG_ LATERAL_ZONE : 28|3@0+ (1,0) [0|7] "" XXX
+ SG_ IN_PATH : 25|1@0+ (1,0) [0|1] "" XXX
+ SG_ EXT_RESERVED : 39|16@0+ (1,0) [0|65535] "" XXX
  SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 800 RADAR_TRACK_2: 8 XXX
- SG_ TRACK_FLAG_7 : 7|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_FLAG_6 : 6|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_VALID : 5|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_STATUS : 7|3@0+ (1,0) [0|7] "" XXX
  SG_ AZIMUTH_LO : 2|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ AZIMUTH_HI : 18|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ RANGE : 35|12@0+ (0.0625,0) [0|255.9375] "m" XXX
+ SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+
+BO_ 832 RADAR_TRACK_3_EXT: 8 XXX
+ SG_ TRACK_PRESENT : 7|8@0+ (1,0) [0|255] "" XXX
+ SG_ TRACK_ID : 15|8@0+ (1,0) [0|255] "" XXX
+ SG_ INV_TTC : 23|8@0- (1,0) [-128|127] "" XXX
+ SG_ TRACK_MEASURED : 30|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_B3_BIT5 : 29|1@0+ (1,0) [0|1] "" XXX
+ SG_ LATERAL_ZONE : 28|3@0+ (1,0) [0|7] "" XXX
+ SG_ IN_PATH : 25|1@0+ (1,0) [0|1] "" XXX
+ SG_ EXT_RESERVED : 39|16@0+ (1,0) [0|65535] "" XXX
  SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 864 RADAR_TRACK_3: 8 XXX
- SG_ TRACK_FLAG_7 : 7|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_FLAG_6 : 6|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_VALID : 5|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_STATUS : 7|3@0+ (1,0) [0|7] "" XXX
  SG_ AZIMUTH_LO : 2|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ AZIMUTH_HI : 18|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ RANGE : 35|12@0+ (0.0625,0) [0|255.9375] "m" XXX
  SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
  SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
 
+BO_ 896 RADAR_TRACK_4_EXT: 8 XXX
+ SG_ TRACK_PRESENT : 7|8@0+ (1,0) [0|255] "" XXX
+ SG_ TRACK_ID : 15|8@0+ (1,0) [0|255] "" XXX
+ SG_ INV_TTC : 23|8@0- (1,0) [-128|127] "" XXX
+ SG_ TRACK_MEASURED : 30|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_B3_BIT5 : 29|1@0+ (1,0) [0|1] "" XXX
+ SG_ LATERAL_ZONE : 28|3@0+ (1,0) [0|7] "" XXX
+ SG_ IN_PATH : 25|1@0+ (1,0) [0|1] "" XXX
+ SG_ EXT_RESERVED : 39|16@0+ (1,0) [0|65535] "" XXX
+ SG_ COUNTER : 55|4@0+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 63|8@0+ (1,0) [0|255] "" XXX
+
 BO_ 928 RADAR_TRACK_4: 8 XXX
- SG_ TRACK_FLAG_7 : 7|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_FLAG_6 : 6|1@0+ (1,0) [0|1] "" XXX
- SG_ TRACK_VALID : 5|1@0+ (1,0) [0|1] "" XXX
+ SG_ TRACK_STATUS : 7|3@0+ (1,0) [0|7] "" XXX
  SG_ AZIMUTH_LO : 2|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ AZIMUTH_HI : 18|11@0+ (1,-1024) [-1024|1023] "" XXX
  SG_ RANGE : 35|12@0+ (0.0625,0) [0|255.9375] "m" XXX
@@ -306,7 +346,12 @@ BO_ 1449 GEAR_2: 8 XXX
  SG_ PRNDL : 23|3@0+ (1,0) [0|7] "" XXX
 
 BO_ 1854 STEERING_LEVERS: 4 BCM
+ SG_ PARK_LAMPS : 1|1@0+ (1,0) [0|1] "" XXX
+ SG_ TURN_LAMP_LEFT : 15|1@0+ (1,0) [0|1] "" XXX
  SG_ TURN_SIGNALS : 17|2@0+ (1,0) [0|3] "" XXX
+ SG_ BRAKE_LAMPS : 18|1@0+ (1,0) [0|1] "" XXX
+ SG_ TURN_LAMP_RIGHT : 21|1@0+ (1,0) [0|1] "" XXX
+ SG_ PARK_LAMPS_2 : 23|1@0+ (1,0) [0|1] "" XXX
 
 
 
@@ -324,12 +369,12 @@ CM_ SG_ 762 ACC_ACCEL "RES+ / speed + when engaged";
 CM_ SG_ 259 ACC_SUBSTATE "Likely 'an accelerator request is outstanding'. It is 0 in 100.00 % of the frames in which ACC_COMMAND (0x15c) is requesting decel, and equals (ACC_COMMAND.ACC_ACCEL_REQ > 0) on 96.68 / 95.96 / 82.38 % of engaged frames on routes 000000e7 / 000000d8 / 000000ca (n = 162,905 / 101,390 / 32,508; r = +0.609 / +0.641 / +0.501). Previously recorded as 'observed only while ACC_ENGAGED, meaning TBD'.";
 CM_ SG_ 252 THROTTLE_VIRTUAL "Formerly ACCEL_PEDAL. This is the PCM's commanded/virtual pedal: > 0 on 97.5 % of ACC-engaged frames (routes 000000e7/000000d8) and led by the 0x15C ACC accel request; it also carries the driver press (parked marks 134/135). Not a driver-only gas signal.";
 CM_ BO_ 496 "Raw CAN C and CH, ~50 Hz, no counter or checksum; bytes 2-7 always 0. Driver accelerator pedal: corr +0.9998 with THROTTLE_VIRTUAL while ACC is off, exactly 0 on all 128,528 settled ACC-engaged frames of routes 000000e7 and 000000d8, nonzero on 98.6 % of the parked pedal press (marks 134/135). Gain 0.408 %/count is fitted against THROTTLE_VIRTUAL, not pedal travel.";
-CM_ SG_ 257 ACC_BRAKE_ACTIVE "Formerly MAYBE_ACC_BRAKE. Echo of the radar/ACC brake request carried by ACC_COMMAND (0x15c): r = +0.992, P(set | a decel request is active) = 0.991, P(set | idle) = 2.9e-5 over route 000000e7. Its six transitions are exactly the three ACC brake episodes, and no set frame in any drive lacks a 0x15c request.";
+CM_ SG_ 257 ACC_BRAKE_ACTIVE "Formerly MAYBE_ACC_BRAKE. Echo of the radar/ACC brake request carried by ACC_COMMAND (0x15c). P(set | a decel request is active) is ROUTE-DEPENDENT and must not be read as a general rate: 0.992 on route 000000e7, 0.992 on 000000ca but only 0.825 on 000000d8. The other direction is what makes the signal sound - P(set | idle) is at most 2.3e-5 on every route - so a set frame means an ACC brake request, while a request does not always set it (the ABS deadband, see ACC_DECEL_REQUEST). On route 000000e7 its six transitions are exactly the three ACC brake episodes and no set frame in any drive lacks a 0x15c request.";
 CM_ SG_ 250 TURN_SIGNAL_STATE "byte1 bits 0-1: 2 left, 1 right, 0 off. Hazards are not represented here; use STEERING_LEVERS.TURN_SIGNALS for hazards.";
 CM_ BO_ 598 "Raw CAN C only. byte0 bit3 is 1 while the electronic parking brake is ENGAGED and 0 while released - the opposite of the earlier reading. The parked sweep was ON->OFF->ON, not OFF->ON->OFF ('the parking brake is already on', 490.1 s of route 000000e7); the bit also goes 0 at drive-away (869.84 s) and 1 at the narrated 'Parking brake on' (3513.95 s), and matches the two CAN CH copies frame for frame.";
 CM_ BO_ 400 "Raw CAN C only, 20 Hz. byte1 high nibble followed P=1, R=2, N=3, D=4, P=1 exactly during the isolated parked PRNDL sweep in collection-run-1. It does carry the platform protection: byte6 low nibble is a +1 mod 16 counter and byte7 is the FCA CRC-8 over bytes 0-6, both at 100.000 % of the 70,556 frames of route 000000e7. GEAR_2 (0x5a9) is the CAN CH equivalent and is what the port reads.";
 CM_ BO_ 1201 "Raw CAN C and CH, 2 Hz plus on change. Front-door sweep: byte0 bit0 = driver/front-left open; byte1 bit7 = passenger/front-right open. Rear doors were not exercised and remain undefined.";
-CM_ BO_ 1854 "Raw CAN C and CH, about 4 Hz plus on change. byte2 low two bits: 0 off, 1 right, 2 left, 3 hazards; confirmed by the isolated parked sweep in collection-run-1.";
+CM_ BO_ 1854 "DLC 4, about 4 Hz plus on change. WARNING: the CAN CH and raw CAN C versions of this address are DIFFERENT MESSAGES. TURN_SIGNALS (byte 2 bits 0-1, 0 off / 1 right / 2 left / 3 hazards, confirmed by the isolated parked sweep in collection-run-1) exists only on CAN CH, where it is what the port reads; PARK_LAMPS, BRAKE_LAMPS and the two TURN_LAMP_* bits exist only on raw CAN C. The two layouts use disjoint bits, verified frame by frame - on comma bus 0 the only payloads seen in a whole route are 00 00 00 00, 00 00 01 00, 00 00 02 00 and 00 00 03 00, so every lamp bit reads 0 there, and on raw CAN C byte 2 bits 0-1 are 0 in every frame, so TURN_SIGNALS reads 0 there. They coexist safely in one definition, but do not read the lamp bits off comma bus 0 or the stalk state off raw CAN C.";
 CM_ BO_ 1444 "Raw CAN C only, 1 Hz plus on change. Isolated traffic events in collection-run-1 confirmed byte1 bit4 = right blind spot and bit5 = left blind spot; both bits were observed simultaneously.";
 CM_ SG_ 262 TORQUE_MOTOR "EPS motor torque. The (1,-2000) offset is measured, not assumed to be mid-scale: over 3660 parked frames of route 000000e7 with the vehicle stopped and |DRIVER_TORQUE| < 5 the raw value sits at 1999 or 2000 in 47 % of frames and within 1995-2001 in 78 %, so zero is at raw 2000. Reading it as mid-scale 2048 would put a -48 count bias into steeringTorqueEps and into any liveTorqueParameters fit. During the isolated parked steering sweep it correlated 0.976 with DRIVER_TORQUE; during LKAS actuation it followed commanded torque with the expected lower scale.";
 CM_ SG_ 262 LKA_STATUS "0 inactive, 2 armed/accepted. Value 2 agreed with LKAS_COMMAND.LKAS_CONTROL_BIT on 99.95 % of frames and was present for essentially all green/yellow HUD states in collection-run-1.";
@@ -350,6 +395,21 @@ CM_ BO_ 1850 "Raw CAN C only, 1 Hz, DLC 6. Full BCD date and time: byte0 hour, b
 CM_ SG_ 1351 LKA_HUD_STATE "byte6 bits 0-5, enumerated (bit-field readings do not fit all values): 0 LaneSense switched off, 2 grey car (LaneSense on, no lanes), 12 green (lanes acquired, armed), 16 yellow left departure (negative LKAS torque), 20 yellow right departure (positive torque); 12 is also held during the hands-off warning (0xcc). Value 0 agrees with LANESENSE_DISABLED on 100.0000 % of frames in both directions (138 frames at 164.1-166.9 s of route 000000e7, 238 frames at 69.8-72.5 s of 000000d8). Values 8, 22 and 24 are sub-second transients between the stable states - 8 on route 000000d8 only (9 frames at 1875.5-1877.5 s, zero torque), 22 always immediately after 16, 24 always immediately after 20 - and never last longer than 2.2 s.";
 CM_ SG_ 1351 LKA_WARNING_BITS "byte6 bits 6-7: 3 during the captured combined lane-departure + hands-off warning (0xcc with green state, 0xd0 with yellow-left); 0 otherwise. Hands-off-only behavior was not captured.";
 CM_ SG_ 222 STEERING_RATE "1 count = 1 deg/s, not 0.5: the raw value rests at exactly 2000 and fits raw = 1.01*d(STEERING_ANGLE)/dt + 2000 (route e7 n=54314 slope 1.012 intercept 2000.1, route d8 n=54872 slope 1.025 intercept 1999.8). Correlation with the differentiated angle 0.988 / 0.980, median residual 0.053 deg/s. Corrected peaks -436..+394 deg/s.";
+CM_ SG_ 254 UNKNOWN_BYTE5 "Byte 5, i.e. bit start 47 over 8 bits - the position is right, only the observed span was understated. Across routes 00000003 / 000000e7 / 000000d8 / 000000ca the value takes 45-55 plus the isolated 127, where an earlier note said 46-55; 45 occurs only on 00000003. Unidentified.";
+CM_ BO_ 672 "Private fusion bus (comma bus 1), 40.00 ms, DLC 8. THE SECOND HALF OF TRACK SLOT 1: 0x2a0 and 0x2c0 are one 12-byte object record split over two IDs. They carry the same COUNTER on 100.000 % of index-aligned frames, and 'this message is not the idle 00 02 00 5c 00 00' equals 'RADAR_TRACK_1 has TRACK_STATUS != 0' on 99.75 / 99.73 / 99.31 / 99.18 % of frames on routes 000000e7 / 000000d8 / 000000ca / 00000003, with ZERO frames where 0x2c0 shows an object and this one is idle. The same pairing holds for 0x300 with 0x320, 0x340 with 0x360 and 0x380 with 0x3a0. The list is packed from slot 1 - 'slot k+1 occupied while slot k empty' occurs on 0.000 % of frames - and is ordered by importance rather than strictly by range (P(RANGE_1 <= RANGE_2) = 0.726); all four slots carry real objects and none is a placeholder. The other four 40 ms IDs on this bus, 0x220 with 0x260 and 0x240 with 0x280, are symmetric pairs of the same shape but are deliberately NOT defined: their fields are structure-only and the lane-geometry hypothesis for them was tested and failed.";
+CM_ SG_ 672 TRACK_PRESENT "Byte 0. Two values only on all four routes: 0xff while the slot holds an object and 0x00 while it is empty.";
+CM_ SG_ 672 TRACK_ID "Object identity, constant within a track. It changes on only 1.0-5.6 % of consecutive occupied frame pairs, and |dRANGE| p90 is 8-28 counts across a no-change pair against 1152-1592 counts (72-100 m) across a change, which is a different object rather than a jump. IDs are near-unique across slots (0.018 % collisions), and when an ID moves between slots in a single frame (1712 events on route 000000e7) the range matches within 1 m on 82.4 / 79.2 / 69.7 / 69.5 % of them: identity survives re-ranking, which a counter or a hash would not.";
+CM_ SG_ 672 INV_TTC "INVERSE TIME TO COLLISION, signed, positive = closing. DECLARED AS RAW COUNTS because the physical quantity depends on RANGE: closing speed is v_rel = -RANGE * INV_TTC / 60 m/s, giving a resolution of RANGE/60 m/s per count (0.17 m/s at 10 m, 0.67 at 40, 1.7 at 100). This is the closing-speed field, and an earlier conclusion that no relative-speed field existed in these messages was wrong - it is a range rate normalised by range, not a velocity, which is why a scan against dRANGE/dt misses it (raw r = -0.42 to -0.71, and the fitted m/s per count moves 10x across range bands). Normalised, r(byte2, -dRANGE/dt / RANGE) = +0.87 to +0.97 in the 20-40 m band at 54-59 counts per 1/s on every slot and route. Confirmed by integration rather than correlation: integrating d(ln RANGE)/dt = -INV_TTC over each single-TRACK_ID occupancy segment of at least 75 frames reproduces the end range to a median 0.6-3.3 m over segments whose range changes 8-37 m, across four routes and four slots, with a best constant of 56-63. 1/60 per count is used; 1/64 is at the edge of the bracket and not excluded. Worked example: route 000000e7 1698.0-1706.7 s, approaching a stopped car, this byte climbs 10 to 21 while the gap closes 49.8 to 10.6 m and then falls to 0 at standstill - the shape of 1/TTC, not of |v_rel|, which falls monotonically throughout.";
+CM_ SG_ 672 IN_PATH "Explicit in-path / closest-in-path-vehicle flag, and the best lead predictor on this bus. Slot 1 against ACC_HUD.ACC_GAP_LEAD_STATE: P(HUD lead | occupied and IN_PATH and RANGE < 130 m) = 0.920 / 0.953 / 0.952 and P(HUD lead | occupied and IN_PATH = 0) = 0.013 / 0.007 / 0.001 on routes 000000e7 / 000000d8 / 000000ca, and the predicate agrees with the factory flag on 94.8 / 97.0 / 97.9 % of ALL frames against 83.6 / 89.6 / 85.2 % for the AZIMUTH_LO < 0 < AZIMUTH_HI proxy that RADAR_TRACK_1's comment describes. OR-ing the other three slots changes agreement by less than 0.1 %: slot 1 alone carries the lead.";
+CM_ SG_ 672 LATERAL_ZONE "A lateral region code, LIKELY. On route 000000e7 slot 1 the median |azimuth| is 134 counts with bit 2 set against 24 clear, 152 against 22 for bit 3 and 92 against 28 for bit 4, and the median range rises from about 32 m to 50-73 m as the higher bits set. The boundaries are unproven.";
+CM_ SG_ 672 TRACK_MEASURED "Byte 3 bit 6, set on 99.6-99.9 % of frames; TRACK_B3_BIT5 is its complement. Byte 3 bits 7 and 0 are constant 1 and 0 and are left undeclared.";
+CM_ SG_ 672 EXT_RESERVED "Bytes 4-5, constant 0 on every frame of every route.";
+CM_ BO_ 768 "Private fusion bus (comma bus 1) only. The second half of track slot 2, paired with RADAR_TRACK_2 (0x320); layout identical to RADAR_TRACK_1_EXT.";
+CM_ BO_ 832 "Private fusion bus (comma bus 1) only. The second half of track slot 3, paired with RADAR_TRACK_3 (0x360); layout identical to RADAR_TRACK_1_EXT.";
+CM_ BO_ 896 "Private fusion bus (comma bus 1) only. The second half of track slot 4, paired with RADAR_TRACK_4 (0x3a0); layout identical to RADAR_TRACK_1_EXT. ADDRESS COLLISION, EXPECTED: 0x380 also exists on CAN CH and raw CAN C, where it is a completely different and entirely dead message - all eight bytes are zero in all 35,261 frames of route 000000e7 on comma bus 0 and again on bus 2. A bus-agnostic decode tool therefore scores this definition at 0 % checksum and 0 % counter on those buses; that is the all-zero placeholder failing a fusion definition, not a decoding error. On the bus it belongs to it passes at 100.0000 % checksum and 100.000 % counter in all three captures, exactly like slots 1-3. The same caveat applies in spirit to STEERING_LEVERS (0x73e), which is two different messages on two buses.";
+CM_ SG_ 1854 PARK_LAMPS "RAW CAN C ONLY - reads 0 on comma bus 0. 1 = position/parking lamps lit; set in both the parking and low-beam knob positions and clear in off and (daytime) auto. Route 000000e7 edges: 361.85 on (mark 119, off to parking), 373.65 off and 374.00 on as the knob swept back through off and auto ('Oop, I twisted the knob up through auto', 374.7 s), 401.17 off (mark 121, low beam to auto). Unique over the 490 s parked baseline with zero extra changes on either bus. Route 000000d8 independently: rises at 3201.63, 0.22 s before LANESENSE_BUTTON.LOW_BEAM at 3201.85. Together with LOW_BEAM this gives off or auto = (0,0), parking = (1,0), low beam = (1,1); the OFF and AUTO knob positions are NOT distinguishable on either bus. PARK_LAMPS_2 (byte 2 bit 7) is an exact duplicate in every frame of both routes.";
+CM_ SG_ 1854 BRAKE_LAMPS "RAW CAN C ONLY - reads 0 on comma bus 0. 1 = brake lamps lit. Agrees with ABS_3.BRAKE_PEDAL_SWITCH on 99.358 % of 15,259 paired frames of route 000000e7, and all three lamp-on-without-pedal episodes are ACC-commanded braking (1637.0-1639.3, 3023.7-3027.2 and 3257.7-3267.1 s, each narrated). This is the lamp, not the pedal switch - use ABS_3.BRAKE_PEDAL_SWITCH for driver braking.";
+CM_ SG_ 1854 TURN_LAMP_LEFT "RAW CAN C ONLY - reads 0 on comma bus 0. Instantaneous bulb state, toggling with a 0.34 s period while the corresponding CAN CH TURN_SIGNALS state is set: left 309.29-316.90 (marks 113/114) and hazards 335.09-340.87 with TURN_LAMP_RIGHT in phase (marks 117/118); TURN_LAMP_RIGHT likewise 322.38-328.84 (marks 115/116). Use TURN_SIGNALS for driver intent; these bits only say whether the bulb is lit in this flash.";
 CM_ SG_ 254 YAW_RATE "Left-positive, same convention as STEERING_ANGLE and LATERAL_ACCEL. With the previously declared negative factor the value correlated -0.972 (route 000000e7, n = 225k above 5 m/s) / -0.976 (000000d8) with the steering angle and went negative in every narrated left turn, while LATERAL_ACCEL went positive; the positive factor makes all three agree. The SCALE is then confirmed absolutely by integrating street corners: 15 turns of route 000000e7 have a median integral of 1135 count-seconds = 91.0 degrees at 0.0014 rad/s per count, and 17 turns of 000000d8 give 89.6 degrees, against the 90 degrees a street corner turns through. Zero sits at code 2043 on both routes, exactly the declared offset. Combined with STEERING_ANGLE this yields a kinematic steer ratio of 15.63 (e7, n = 18,766, r = 0.999) and 15.57 (d8) plus an understeer gradient K = 0.0016 s2/m2, so the apparent ratio rises from 16.5 at 7 m/s to 30 at 30 m/s.";
 CM_ SG_ 270 YAW_RATE_RAW "Same sign correction as ABS_2.YAW_RATE, see the comment there.";
 CM_ SG_ 278 VEHICLE_MOVING_1 "Bits 36-39 were previously named FORWARD_1/REVERSE_1/FORWARD_2/REVERSE_2. They are not direction: all four carry the same 68.9 % duty and agree with ABS_6.VEHICLE_SPEED > 0 on 99.76 % of frames, so they are a vehicle-moving flag - and they are four copies of ONE flag (bit 36 equals bit 37 exactly, bit 38 equals bit 39 exactly, and 36 versus 38 agree on 99.96 % of frames). Direction lives in the ROLLING_* bits.";
@@ -364,9 +424,9 @@ CM_ SG_ 1449 PARKING_BRAKE_ENGAGED "1 = electronic parking brake engaged (byte 1
 CM_ SG_ 900 PARKING_BRAKE_ENGAGED_2 "Byte 3 bit 3, 1 = electronic parking brake engaged. Agrees with GEAR_2.PARKING_BRAKE_ENGAGED on 100.000 % of route 000000e7 frames and 99.992 % of route 000000d8, duty 25.0 % / 16.0 %.";
 CM_ SG_ 900 LOW_BEAM "Byte 3 bit 7, 1 = low beams lit. Unique match over the 490 s parked baseline for the four narrated headlamp-knob actions (374.00 on, 385.75 off to parking, 391.75 on, 401.24 off in auto). It reports lamps lit, not switch position: the off->parking step produces no change anywhere, and no field on either bus follows all six knob positions. Set for only 0.60 % of route 000000e7 and 0.36 % of 000000d8, both daytime drives.";
 CM_ BO_ 241 "CAN CH only - absent from every CANsub raw-C capture and both Red Panda CAN C taps. 100 Hz, DLC 8, bytes 0, 2, 3, 4 and 5 always zero. Byte 6 low nibble is a mod-16 counter (99.996 % on route 000000e7, the deficits are single-frame logger drops) and byte 7 is the FCA CRC-8 over bytes 0-6 at 100.000 % of 352,646 frames - the only CAN CH message outside the ABS/EPS block with both, hence a candidate liveness anchor. Byte 1 reads 0x60 stopped, 0xE0 moving, 0x20 shutting down; bit 5 is always 1.";
-CM_ SG_ 241 VEHICLE_MOVING "Byte 1 bit 7. Hysteretic motion latch: sets at 1.7-2.4 m/s on pull-away and clears at 0.37-0.43 m/s on stopping, 27 edges in route 000000e7 (908.66 up ... 3508.52 down), duty 67.2 %, 13 stop events. Agreement with ABS_6.VEHICLE_SPEED > 1.5 m/s is 99.21 %, with ABS_5.VEHICLE_MOVING_1..4 98.27 %, with ABS_5.ROLLING_FORWARD_1 98.83 % - a motion flag in its own right, not a copy of any of them. 0x1f5 byte 2 bit 6 is the same state with looser debouncing. Prefer ABS_6.VEHICLE_SPEED for standstill; this is a cross-check.";
-CM_ SG_ 241 IGNITION_RUN "Byte 1 bit 6. Set for the whole of every route, clears only in the last 24 frames (0.24 s) at ignition-off.";
-CM_ SG_ 348 ACC_DECEL_REQUEST "13-bit raw code in bytes 0-1 bits 7-3, LEFT AS RAW COUNTS ON PURPOSE. The idle value 1600 (bytes 0-1 = 0x3200) is a NO-REQUEST sentinel, not a physical deceleration - read this only when ACC_DECEL_ACTIVE is 1, where the observed codes are 5434-5712. Bits 9-10 of the message are constant 0 and bit 8 is ACC_DECEL_ACTIVE. A physical scale can only be given as INDICATIVE: fitting ABS_2.LONG_ACCEL at +0.30 s lag over the only 10 shallow braking episodes in 8065 s gives a pooled +0.004025 * code - 23.012 (r = +0.684, n = 1730), with per-route zero crossings at codes 5704 / 5723 / 5697 and a deepest event of -1.14 m/s2. That fit is not drive-invariant and is not declared here. The ABS deadband sits between codes 5663 and 5683 (about -0.14 to -0.22 m/s2): every episode reaching 5663 or below raised ABS_6.ACC_BRAKE_ACTIVE and the two bottoming out at 5683 and 5694 did not.";
+CM_ SG_ 241 VEHICLE_MOVING "Byte 1 bit 7, a motion flag with a debounce that is NOT a fixed speed threshold. On routes 000000d8 / 000000ca / 00000003 it sets 0.07-0.09 s after motion begins, at 0.12-0.36 m/s, and clears at 0.00-0.12 m/s; on 000000e7 the same bit lagged 1.4 s and 1.25 m and set at 1.4-2.4 m/s. An earlier comment quoted the 000000e7 figures as if they were general - they are not. Agreement with ABS_6.VEHICLE_SPEED > 0.5 m/s is 96.7-99.0 % across the four routes (against v > 1.5 m/s it falls to 93.9 % on 000000ca). Prefer ABS_6.VEHICLE_SPEED for standstill; this is a cross-check.";
+CM_ SG_ 241 IGNITION_RUN "Byte 1 bit 6. CANDIDATE LABEL, WEAK EVIDENCE: it rests on exactly one edge per route, always 0.2-0.3 s before the last frame (24-26 clear frames), and 0xf1 is CAN CH only so no capture holds a key-off to key-on cycle for it. It is at least not an engine-running bit - on route 00000003 it stays 1 in 100.000 % of the 20,672 ENGINE_1.ENGINE_STOPPED frames, so it survives stop/start. POWER_RUN would be an equally good name. Byte 1 reads 0x60 stopped, 0xe0 moving, 0x20 shutting down.";
+CM_ SG_ 348 ACC_DECEL_REQUEST "13-bit raw code in bytes 0-1 bits 7-3, LEFT AS RAW COUNTS ON PURPOSE - NO PHYSICAL SCALE IS DECLARED AND NONE SHOULD BE. The idle value 1600 (bytes 0-1 = 0x3200) is a NO-REQUEST sentinel, not a physical deceleration; read this only when ACC_DECEL_ACTIVE is 1, where the observed codes are 5434-5712 / 5532-5708 / 5595-5664 on routes 000000e7 / 000000d8 / 000000ca. Message bits 9 and 10 are constant 0. The SIGN is confirmed - a higher code means less braking, r(code, ABS_2.LONG_ACCEL at +0.30 s lag) = +0.842 / +0.571 / +0.521 with zero near code 5704 - but the SCALE DOES NOT TRANSFER between routes: own-route slopes are 0.0082 / 0.0078 / 0.0112 m/s2 per count, a 43 % spread over only ten shallow episodes, and fitting route 000000e7 alone then applying it to the other two leaves a mean residual of -0.12 m/s2 and an rms of 0.51 / 0.31 against a signal whose whole p5-p95 span is -1.5 to 0 m/s2. An earlier proposal to ship (0.004,-23.0) m/s2 was rejected for exactly this reason. The ABS deadband sits between codes 5663 and 5683 (about -0.14 to -0.22 m/s2): every episode reaching 5663 or below raised ABS_6.ACC_BRAKE_ACTIVE and the two bottoming out at 5683 and 5694 did not.";
 CM_ SG_ 348 ACC_DECEL_ACTIVE "Byte 1 bit 0, duty 0.808 % on route 000000e7. Set in exactly the frames where bytes 0-1 differ from 0x3200 (812 / 726 / 192 frames on routes 000000e7 / 000000d8 / 000000ca) and clear in every other frame. ACC_ACCEL_REQUEST is 0 in 100.00 % of those frames, so accel and decel requests are mutually exclusive.";
 CM_ SG_ 348 ACC_ACCEL_REQUEST "The ACC accelerator/torque request to the PCM is 11 bits, not 8: byte3 plus byte4 bits 7-5, which an earlier reading had as a separate 3-bit rolling counter (it is not one - it steps +1 mod 8 on only 5.5-6.5 % of frames). Only the 11-bit reading is continuous: step size p50 0, p90 1, p99 3 with 99.94 % of steps at most 8, against a maximum step of 79 for byte3 alone. The low 3 bits are 0 in all 869 engaged frames where byte3 is 0, and the whole field is exactly 0 on every disengaged frame and in 100.00 % of decel-request frames. Range 0-799 while engaged; it leads ENGINE_1.THROTTLE_VIRTUAL by 0.10 s (r = +0.750 on route 000000e7). A gateway re-emission must reproduce these three bits as part of the request, not synthesise a counter.";
 CM_ SG_ 348 ACC_UNKNOWN_B2 "Byte 2, constant 0x01 on 100 % of 199,404 frames.";
@@ -375,10 +435,10 @@ CM_ BO_ 601 "CAN CH (comma bus 0 and 2) and raw CAN C, 10 Hz, DLC 8, byte-identi
 CM_ SG_ 601 ODOMETER "Byte 2, byte 3 and byte 4 high nibble as one 20-bit big-endian count. Integrating ABS_6.VEHICLE_SPEED between the 50 increments of route 000000e7 gives 982.3 m per count (p10 980.7, p90 983.9, n = 49), i.e. 1 km per count once the 2-3 % speedometer over-read is allowed for - THE LSB HAS NEVER BEEN CHECKED AGAINST A DASH READING, so the km unit is inferred. Byte 3 increments exactly at each byte-4-high-nibble wrap (route 000000e7 at 1579.10 / 2214.80 / 2907.21 s, three of three) and byte 2 is the high byte: the field reads 40280 to 40289 on route 00000003, 41701 to 41712 on 000000ca, 41870 to 41915 on 000000d8 and 41973 to 42023 on 000000e7 - monotone across four routes in chronological order over integrated spans of 9010 / 10893 / 43688 / 49230 m. About 42,023 km = 26,112 mi, sensible for a 2023 Renegade in 2026. The only distance source on CAN CH; needs no gateway forwarding.";
 CM_ SG_ 601 ODOMETER_INVALID "Byte 5 bit 7. 1 for the first 4.19 s of route 000000e7 and 0 for the remaining 3523 s; both values occur in every capture. Odometer not yet valid at boot.";
 CM_ BO_ 512 "Private fusion bus (comma bus 1) only. 40.00 ms. Header/status frame of the 14-message fusion burst - see RADAR_TRACK_1.";
-CM_ SG_ 512 FUSED_LEAD_PRESENT "Byte 0 bit 7. Agrees with the ACC_HUD lead flag (ACC_GAP_LEAD_STATE 6-9 lead, 10-13 no lead) on 85.3 / 87.1 / 91.7 % of frames on routes 000000e7 / 000000d8 / 000000ca, r = +0.743 / +0.771 / +0.836. LIKELY, not confirmed. Byte 0 only ever takes 0x00, 0x50, 0x90 and 0xa0.";
+CM_ SG_ 512 LEAD_STATUS "Byte 0 high nibble; the low nibble is always 0. Only four values occur - 0, 5, 9, 10 - and P(ACC_HUD reports a lead) given each is 0.024 / 0.584 / 0.990 / 1.000 on route 000000e7, 0.013 / 0.597 / 0.989 / 1.000 on 000000d8 and 0.007 / 0.846 / 1.000 / 0.920 on 000000ca. This field WAS declared as a 1-bit FUSED_LEAD_PRESENT on bit 7, which was wrong: bit 7 is set only for 9 and 10, so it misses the whole value-5 state, which is a lead more often than not. Agreement with the factory lead flag: bit 7 83.9 / 85.7 / 88.4 %, bit 4 85.7 / 89.0 / 93.1 %, and simply byte0 != 0 88.2 / 90.1 / 97.3 % - the old bit was the WORST of the three on every route. 5 is read as tentative and 9/10 as a confirmed lead, but the distinction between 9 and 10 is unproven. RADAR_TRACK_1_EXT.IN_PATH is a better lead predictor than any of these.";
 CM_ SG_ 512 TIME_BASE "Bytes 3-4, a free-running 16-bit ramp at 36.06 counts/s that is independent of vehicle speed (35.73 counts/s below 1 m/s, 36.09 between 28 and 33 m/s), so it is a time base rather than a distance or a counter.";
 CM_ BO_ 704 "Private fusion bus (comma bus 1) only, 40.00 ms, DLC 8. Object slot 1 of a four-slot priority-ordered list (0x2c0 / 0x320 / 0x360 / 0x3a0) and THE ACC LEAD SLOT: P(ACC_HUD reports a lead | this slot occupied and AZIMUTH_LO < 0 < AZIMUTH_HI) = 0.875 / 0.893 / 0.941 on routes 000000e7 / 000000d8 / 000000ca, against 0.233 / 0.186 / 0.047 when both angles share a sign; the predicate straddles-boresight-and-under-130-m agrees with the HUD flag on 83.6 / 89.6 / 85.2 % of frames and the other three slots add nothing to that prediction. Median range with a HUD lead present is 33.5 / 32.9 / 47.2 m against 103.2 / 125.2 / 93.0 m with none. All 14 fusion IDs leave a single ECU in one gap-free burst spaced 0.2358 ms apart every 40.00 ms (which ECU is unproven); 0x220, 0x240, 0x260, 0x280, 0x2a0, 0x300, 0x340 and 0x380 are structure-only and deliberately left undefined, and the lane-line hypothesis for the 0x2a0/0x300/0x340/0x380 group was tested and rejected.";
-CM_ SG_ 704 TRACK_VALID "Byte 0 bit 5, slot occupied. The empty payload is 04 00 04 00 00 00 on every slot and route (33.0 / 48.2 / 65.6 / 79.9 % of route 000000e7 frames for slots 1-4), which is both angles at offset-binary zero and range 0. Byte 0 bits 4-3 and byte 2 bits 7-3 and byte 4 bits 7-4 are always zero.";
+CM_ SG_ 704 TRACK_STATUS "Byte 0 bits 7-5, a ONE-HOT 3-bit status rather than three independent flags: the only values are 0 (empty), 1, 2 and 4, with 3 on 0.003-0.5 % of frames as a one-frame transition and 5, 6, 7 never. Occupied frames split 89-96 % state 1, 0.1-5 % state 2 and 0.3-3.4 % state 4 on all four routes. THIS REPLACES A TRACK_VALID DECLARED ON BIT 5 ALONE, WHICH MISSED 2-8 % OF REAL OBJECTS: route 000000e7 slot 2 at 2590.4-2599.5 s tracks one vehicle (TRACK_ID 0x32, range 60.0 -> 36.4 m evolving smoothly) for 9 s with bit 5 clear and bit 6 set. The meanings of 1, 2 and 4 are UNPROVEN - 91-96 % of new tracks are born in state 1 so state 4 is not new, and state-4 tracks are younger (median age 16-74 frames against 46-120). The empty payload is 04 00 04 00 00 00 on every slot and route (33.0 / 48.2 / 65.6 / 79.9 % of route 000000e7 frames for slots 1-4), which is both angles at offset-binary zero and range 0. Byte 0 bits 4-3, byte 2 bits 7-3 and byte 4 bits 7-4 are always zero.";
 CM_ SG_ 704 AZIMUTH_LO "Offset-binary 11-bit, zero at raw 1024. AZIMUTH_HI is greater than AZIMUTH_LO on 99.44-100.00 % of occupied frames on every slot and route, and (AZIMUTH_HI - AZIMUTH_LO) * RANGE is invariant at 51,000-54,000 counts across all four slots and three routes while the median difference falls 158 to 94 to 50 to 23 as range grows - so the pair is ANGULAR (proportional to 1/range), the two edges of an object, not a metric position. With RANGE at 0.0625 m/count a 1.8 m car implies about 5.4e-4 rad per count. THE ANGULAR SCALE AND THE LEFT/RIGHT SIGN ARE UNPROVEN: the steering-angle correlation test was inconclusive (r = -0.048 / -0.071) because in-path leads are almost all on straight road.";
 CM_ SG_ 704 RANGE "0.0625 m per count is INDICATIVE, bracketed to 0.0586-0.0725 by six approach-to-a-stopped-car events (routes 000000e7 at 1703.15 and 2818.60, 000000d8 at 2321.65, 2699.29 and 2779.45, 000000ca at 1152.16) where count * delta-RANGE must equal the integral of v_ego; 1/16 m sits inside that bracket, makes the 12-bit saturation at raw 3276 equal 204.75 m and puts the held standstill gaps at 3.3-5.3 m. No measured ground-truth distance exists yet. No relative-speed field exists in this payload - dRANGE/dt is not predicted by either angle - so closing speed must be differentiated from RANGE.";
 CM_ SG_ 704 COUNTER "HIGH nibble of byte 6, +1 mod 16 on 100.000 % of frames on all four routes; the low nibble is always 0. This is the opposite convention to raw CAN C, where the counter is in the low nibble - a gateway bridging the two buses needs both.";
@@ -390,11 +450,11 @@ CM_ BO_ 1046 "VIN broadcast, CAN CH and raw CAN C, 10 Hz, DLC 8. Byte 0 is a 3-f
 CM_ BO_ 1050 "Raw CAN C only, 10 Hz, DLC 7, no counter and no checksum.";
 CM_ SG_ 1050 BATTERY_VOLTAGE_RAW "Byte 0, LEFT AS RAW COUNTS ON PURPOSE. Same three-phase signature in all three CANsub captures - key-on rest, crank dip, charging plateau: route 000000e7 reads 177 at t=0, dips to 150 at 0.6-1.2 s, recovers through 182 by t=8 s, then sits at 199-202 for the rest of the route (min 144, max 211); test-drive-2 reads 174 then dips then 198-201; test-drive-3 reads 179 then dips then 200-202 (max 212). Nothing else on either bus dips at crank. Assuming 14.2 V at the plateau would give about 0.0703 V per count (crank dip 10.5 V, key-on rest 12.4 V) but that is a back-fit, not a measurement, so no scale is declared here. Take a multimeter reading with the capture running before anything reads this as volts.";
 CM_ SG_ 1449 PARKING_BRAKE_TRANSITION "Byte 0 of GEAR_2, 0 while settled. Route 000000e7 takes 0x05 at 494.83-496.00 and 869.72-871.02 s, immediately before each release, and 0x02 at 500.18-501.76 and 3512.74-3513.84 s, at each apply: 5 = releasing, 2 = applying. Eight edges, all of them bracketing the four PARKING_BRAKE_ENGAGED transitions and nothing else.";
-CM_ SG_ 254 LONG_ACCEL "Scale re-fitted against d(ABS_6.VEHICLE_SPEED)/dt - sum(dv) over the integral of (raw - 2050) dt across 3-8 s windows, braking and accelerating windows kept separate - which gives 0.0178-0.0203 m/s2 per count on routes 000000e7 / 000000d8 / 000000ca, central 0.0192 +- 0.0008. The previous 0.01 understated acceleration by 1.9x: it capped a whole hour of driving with eleven stops at -2.34 m/s2. 0.01916 is 4 g full scale over the 12-bit field and the zero stays at code 2048 (measured moving mean 2049.7-2050.3). About 20 frames per hour carry 0xfff on LONG_ACCEL, LATERAL_ACCEL and YAW_RATE simultaneously - an all-ones invalid frame, not a measurement; reject those rather than reading a 39 m/s2 spike.";
-CM_ SG_ 254 LATERAL_ACCEL "Same sensor and scale as LONG_ACCEL, calibrated independently from a_lat = v * yaw_rate over unbanked low-speed corners: per-turn slope median 0.01846 over 10 turns of route 000000e7 and 0.01878 over 11 turns of 000000d8, r about 0.97 per turn. The straight-line zero sits 5-6 counts high, which is road crown, not a design offset.";
+CM_ SG_ 254 LONG_ACCEL "Scale re-fitted against d(ABS_6.VEHICLE_SPEED)/dt over 3-8 s windows, braking and accelerating windows kept separate. TREAT 0.01916 AS BEST-AVAILABLE, NOT PRECISE: per-route fits land at 0.0178-0.0203 m/s2 per count and a held-out check on route 00000003 has 0.01916 over-reading by about 7.7 %, so the honest statement is roughly 0.018 +- 0.002. It is still a large improvement - the previous 0.01 under-read by about 44 % and capped a whole hour of driving with eleven stops at -2.34 m/s2 - and 0.01916 is 4 g full scale over the 12-bit field, which is the natural sensor range. The LONG_ACCEL zero is confirmed at code 2048 (measured moving mean 2049.7-2050.3); the LATERAL_ACCEL zero is not the same, see its own comment. About 20 frames per hour carry 0xfff on LONG_ACCEL, LATERAL_ACCEL and YAW_RATE simultaneously - an all-ones invalid frame, not a measurement; reject those rather than reading a 39 m/s2 spike.";
+CM_ SG_ 254 LATERAL_ACCEL "Same sensor and scale as LONG_ACCEL, with the same roughly 0.018 +- 0.002 uncertainty (calibrated independently from a_lat = v * yaw_rate over unbanked low-speed corners: per-turn slope median 0.01846 over 10 turns of route 000000e7 and 0.01878 over 11 turns of 000000d8, r about 0.97 per turn). THE ZERO IS NOT 2048. A joint scale-and-zero fit over unbanked 4-15 m/s driving puts it at 2055.3 / 2056.3 / 2056.8 / 2056.6 counts on routes 00000003 / 000000e7 / 000000d8 / 000000ca - 7 to 9 counts, or +0.14 to +0.17 m/s2, above mid-scale and stable to under 1.5 counts across four routes on four different days. That repeatability argues for a sensor roll or mount bias rather than the road crown an earlier note assumed, so the offset is declared as -39.39 (zero at code 2056); reading it at mid-scale would carry a constant +0.15 m/s2 error.";
 CM_ SG_ 257 BRAKE_PRESSURE_1 "Counts, with no unit anchor. Against the corrected LONG_ACCEL scale, LONG_ACCEL = -0.0345 * BRAKE_PRESSURE_1 + 0.15 m/s2 (r = -0.673 above 2 m/s on route 000000e7); 1-50 counts gives a median -0.92 m/s2 (n = 15,202) and 50-200 counts gives -1.88 (n = 5617). Observed range 0-454.";
 CM_ SG_ 257 COUNTER "The field at byte5 low nibble plus byte6 was previously declared as BRAKE_PRESSURE_2 (43|12). Byte 5's low nibble is always zero and byte 6 is a +1 mod 16 counter on 100.000 % of the 352,646 frames of route 000000e7, so it is the message counter and is now declared as one. NOTE for the safety layer: the 0x101 rx check can now enable its counter check.";
-CM_ SG_ 252 ENGINE_TORQUE "Engine torque, offset binary with zero at code 512. The former UNKNOWN_4 (46|2, and declared little-endian by mistake) was the top of this field: the bit toggle cascade runs unbroken from byte5 bit6 to byte6 bit5, and only the 10-bit reading is continuous (step magnitude p99 = 2 with no wraps, where the 8- and 9-bit readings wrap by 255 and 511). Correlation +0.966 with THROTTLE_VIRTUAL on route 000000e7 (+0.964 on 000000d8, +0.938 on 000000ca, +0.945 on 00000003). Idle sits at +14.5 Nm (rpm 850-950, throttle 0, n = 101,441), part throttle at +82 to +122, and the peak is +274 against the 1.3 L turbo's 270 Nm rating; overrun reads -5 to -25, including every ACC brake episode.";
+CM_ SG_ 252 ENGINE_TORQUE "Engine torque, offset binary with zero at code 512. The former UNKNOWN_4 (46|2, and declared little-endian by mistake) was the top of this field: the bit toggle cascade runs unbroken from byte5 bit6 to byte6 bit5, and only the 10-bit reading is continuous (step magnitude p99 = 2 with no wraps, where the 8- and 9-bit readings wrap by 255 and 511). Correlation +0.966 with THROTTLE_VIRTUAL on route 000000e7 (+0.964 on 000000d8, +0.938 on 000000ca, +0.945 on 00000003). Idle sits at +14.5 Nm (rpm 850-950, throttle 0, n = 101,441), part throttle at +82 to +122, and the peak is +274 against the 1.3 L turbo's 270 Nm rating; overrun reads -5 to -25, including every ACC brake episode. Two frames of route 00000003 read raw 0, i.e. the -512 Nm floor, which is a clip artifact and not a measurement; no other route has any.";
 CM_ SG_ 252 ENGINE_STOPPED "Formerly UNKNOWN_3. 1 while the engine is stopped by the stop/start system. It is constant 0 across routes 000000e7 / 000000d8 / 000000ca (1.02 M frames), but has 19.30 % duty and nine windows in route 00000003 (184.9-237.5, 310.4-319.8, 427.9-440.9, 477.3-482.7, 505.0-524.2, 718.2-724.4, 742.6-808.0, 852.9-876.3 and 1062.0-1074.0 s) in which ENGINE_RPM reads a median 0, maximum 972 at restart, against 1756 elsewhere. P(1 | moving) = 0.000, P(1 | stopped) = 0.859, P(1 | brake pressed) = 0.538.";
 CM_ SG_ 262 NOT_REVERSE "Formerly UNKNOWN_STATUS. 0 while reverse is selected and 1 otherwise: the route 000000e7 edges at 466.68 / 471.82 and 869.46 / 905.58 bracket the two reverse windows (selector moved at 465.87 / 470.81 and 868.45 / 904.56), and it agrees with NOT ENGINE_1.REVERSE on 99.810 % of frames (99.762 % on 000000d8). It follows the selector about 1 s late, not wheel direction, and also drops on the ignition-off frame.";
 CM_ SG_ 262 SPEED_BELOW_50KPH "Formerly UNKNOWN_2. 1 below and 0 above about 13.6 m/s with almost no hysteresis: 40 transitions on route 000000e7 (rising 13.36-13.62, falling 13.53-13.75 m/s) and 54 on 000000d8 (13.33-13.67 / 13.58-13.75). P(1) is 1.000 in every speed band under 12 m/s and 0.000 in every band over 14 m/s on both routes. 13.6 m/s is 49 km/h - the 50 km/h an over-reading speedometer shows - so this looks like the EPS assist-map boundary. It is NOT the LaneSense arming speed, which is 16.0 m/s.";
@@ -407,6 +467,7 @@ CM_ SG_ 222 UNKNOWN_1 "Constant 1 with zero transitions across routes 000000e7, 
 VAL_ 250 TURN_SIGNAL_STATE 0 "OFF" 1 "RIGHT" 2 "LEFT" ;
 VAL_ 262 LKA_STATUS 0 "INACTIVE" 2 "ARMED" ;
 VAL_ 400 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" 6 "MANUAL" ;
+VAL_ 512 LEAD_STATUS 0 "NONE" 5 "TENTATIVE" 9 "LEAD" 10 "LEAD_ALT" ;
 VAL_ 1351 LKA_HUD_STATE 0 "LANESENSE_OFF" 2 "GREY_NO_LANES" 12 "GREEN_ARMED" 16 "YELLOW_LEFT" 20 "YELLOW_RIGHT" ;
 VAL_ 1449 PARKING_BRAKE_TRANSITION 0 "SETTLED" 2 "APPLYING" 5 "RELEASING" ;
 VAL_ 1449 PRNDL 1 "P" 2 "R" 3 "N" 4 "D" 6 "MANUAL" ;
