@@ -364,6 +364,91 @@ class TestSuswCarState(SuswTestBase):
         CS = self.update(DRIVING, adas)
         self.assertEqual([(e.type, e.pressed) for e in CS.buttonEvents], [(button, False)])
 
+  def test_no_reengage_without_a_rising_edge(self):
+    # The panda grants controls only on a 0 -> 1 transition of ACC_ENGAGED, and it sees no
+    # transition across a fusion outage because it stops receiving 0x103 entirely. CarState must
+    # not re-engage on its own or every LKAS_COMMAND would be blocked until controlsMismatch.
+    # a live 0x103 stream: the counter has to advance or the parser rejects the frames
+    packer = CANPacker("chrysler_susw")
+    counter = 0
+
+    def step(engaged: bool | None, n: int = 1):
+      nonlocal counter
+      for _ in range(n):
+        adas = {"ACC_HUD": HUD_ENGAGED_60, "CRUISE_BUTTONS": BTN_NONE}
+        if engaged is not None:
+          dat = packer.make_can_msg("ACC_STATUS_1", 1, {"ACC_ENGAGED": int(engaged), "COUNTER": counter})[1]
+          counter = (counter + 1) % 16
+          adas["ACC_STATUS_1"] = dat.hex()
+        CS = self.update(DRIVING, adas, {"LKA_HUD_2": LANESENSE_ON_GREEN})
+      return CS
+
+    self.assertTrue(step(True, 3).cruiseState.enabled)
+
+    # the gateway drops out mid-engagement
+    self.assertFalse(step(None, 60).cruiseState.enabled)
+
+    # it comes back with ACC still engaged: no rising edge happened, so we stay disengaged
+    CS = step(True, 20)
+    self.assertTrue(CS.cruiseState.available)
+    self.assertFalse(CS.cruiseState.enabled)
+
+    # seeing ACC_ENGAGED low is what clears the panda's latch, and ours
+    self.assertFalse(step(False).cruiseState.enabled)
+
+    # now a real 0 -> 1 transition re-engages both
+    self.assertTrue(step(True).cruiseState.enabled)
+
+  def test_first_engagement_needs_no_edge(self):
+    # at a clean start the panda's cruise_engaged_prev is false, so the first frame with
+    # ACC_ENGAGED set IS a rising edge for it - we must not require an extra low observation
+    engaged = {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}
+    CS = self.update(DRIVING, engaged, {"LKA_HUD_2": LANESENSE_ON_GREEN})
+    self.assertTrue(CS.cruiseState.enabled)
+
+  def test_speed_saturation_guard(self):
+    # ABS_6.VEHICLE_SPEED is 11 bits and saturates at 34.799 m/s; nothing in the captures reaches
+    # it, so a wrap above 125 km/h is unobserved. A wrap to zero would read as standstill and drop
+    # the LKAS control bit at highway speed. This frame is packed, not captured - no wrap exists in
+    # the data to record.
+    packer = CANPacker("chrysler_susw")
+    wrapped = packer.make_can_msg("ABS_6", 0, {"VEHICLE_SPEED": 0.})[1].hex()
+
+    CS = self.update(DRIVING | {"ABS_6": wrapped})
+    self.assertAlmostEqual(CS.wheelSpeeds.fl, 15.997, places=3)
+    self.assertAlmostEqual(CS.vEgoRaw, 15.92475, places=4)   # the 13-bit wheel-speed mean
+    self.assertFalse(CS.standstill)
+
+    # a genuine standstill, where the wheels agree, is left alone
+    self.setUp()
+    stopped = packer.make_can_msg("ABS_6", 0, {"VEHICLE_SPEED": 0.})[1].hex()
+    zero_wheels = packer.make_can_msg("ABS_1", 0, {})[1].hex()
+    CS = self.update(DRIVING | {"ABS_6": stopped, "ABS_1": zero_wheels})
+    self.assertEqual(CS.vEgoRaw, 0.)
+    self.assertTrue(CS.standstill)
+
+    # and below the ceiling ABS_6 is used unchanged, not blended
+    self.setUp()
+    CS = self.update(DRIVING)
+    self.assertAlmostEqual(CS.vEgoRaw, 15.946, places=3)
+
+    # the guard must stay a saturation guard rather than becoming a general divergence override:
+    # a plausible mid-range ABS_6 reading wins even when the wheel speeds disagree wildly, because
+    # in that direction it is the wheel speeds that are more likely to have gone stale
+    self.setUp()
+    mid = packer.make_can_msg("ABS_6", 0, {"VEHICLE_SPEED": 20.})[1].hex()
+    CS = self.update(DRIVING | {"ABS_6": mid, "ABS_1": packer.make_can_msg("ABS_1", 0, {})[1].hex()})
+    self.assertAlmostEqual(CS.vEgoRaw, 20., delta=0.02)   # 0.017 m/s LSB
+    self.assertFalse(CS.standstill)
+
+  def test_cruise_speed_is_gated(self):
+    # holding the last set speed through an outage is inconsistent with available/enabled going False
+    engaged = {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}
+    self.assertAlmostEqual(self.update(DRIVING, engaged).cruiseState.speed, 60 / 3.6, places=4)
+    for _ in range(60):
+      CS = self.update(DRIVING)
+    self.assertEqual(CS.cruiseState.speed, 0.)
+
   def test_cancel_button_is_never_masked(self):
     packer = CANPacker("chrysler_susw")
     adas = {"ACC_HUD": HUD_READY, "ACC_STATUS_1": ACC_OFF, "CRUISE_BUTTONS": BTN_NONE}
