@@ -14,12 +14,19 @@
 // LKAS_COMMAND, and engagement follows ACC_STATUS_1.ACC_ENGAGED off the gateway bus ANDed with
 // LKA_HUD_2.LANESENSE_DISABLED off the camera bus (G3: openpilot is only ever active with the
 // stock ACC engaged and LaneSense switched on). The stock camera's own LKAS_COMMAND is forwarded
-// to the EPS whenever openpilot is not actuating, so stock LaneSense keeps working when openpilot
-// is off, and is blocked only while controls are allowed so the two can never fight.
+// to the EPS whenever controls are not allowed or openpilot's accepted LKAS_COMMAND stream has
+// expired, so stock LaneSense keeps working when openpilot is off. It is blocked only while both
+// controls are allowed and the accepted openpilot stream is live, so the two can never fight.
+
+// Provisional: 5 frames at 100 Hz. The final value comes from the M4 parked-EPS measurement of how
+// long a 0x1F6 gap the EPS tolerates (AH-148).
+#define CHRYSLER_SUSW_LKAS_TX_TIMEOUT 50000U
 
 // LKA_HUD_2.LANESENSE_DISABLED, latched from bus 2. Fail closed: openpilot may not steer until the
 // camera has actually reported LaneSense on.
 static bool chrysler_susw_lanesense_disabled = true;
+static uint32_t chrysler_susw_lkas_tx_ts = 0U;
+static bool chrysler_susw_lkas_tx_seen = false;
 
 // FCA CRC-8: poly 0x1D, init 0xFF, final xor 0xFF. Same algorithm as chrysler_compute_checksum(),
 // but SUSW needs the covered length to be per-message so the table driven form is used here.
@@ -70,7 +77,7 @@ static safety_config chrysler_susw_init(uint16_t param) {
 
   static const CanMsg CHRYSLER_SUSW_TX_MSGS[] = {
     // LKAS_COMMAND, to the EPS on the car side. Static blocking of the camera's copy is disabled so
-    // chrysler_susw_fwd_hook() can pass it through while openpilot is inactive; relay malfunction
+    // chrysler_susw_fwd_hook() can gate it on the accepted openpilot stream; relay malfunction
     // detection is unaffected, it only keys off .check_relay in the rx path.
     {0x1F6U, 0, 4, .check_relay = true, .disable_static_blocking = true},
     // COMMA_HEARTBEAT, on the private fusion bus only. This is the gateway's opt-in for
@@ -99,6 +106,8 @@ static safety_config chrysler_susw_init(uint16_t param) {
   };
 
   chrysler_susw_lanesense_disabled = true;
+  chrysler_susw_lkas_tx_ts = 0U;
+  chrysler_susw_lkas_tx_seen = false;
   gen_crc_lookup_table_8(0x1DU, chrysler_susw_crc8_lut);
 
   return BUILD_SAFETY_CFG(chrysler_susw_rx_checks, CHRYSLER_SUSW_TX_MSGS);
@@ -155,10 +164,14 @@ static bool chrysler_susw_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 
   if ((bus_num == 2) && (addr == 0x1F6)) {
-    // The stock camera's LKAS_COMMAND reaches the EPS whenever openpilot is not actuating, so stock
-    // LaneSense still steers the car when openpilot is inactive. It is blocked only while controls
-    // are allowed, where openpilot is sending its own 0x1F6 and the two would fight.
-    block_msg = controls_allowed;
+    // Block the stock camera only while controls are allowed and openpilot has a recently accepted
+    // LKAS_COMMAND. A refused command cannot suppress the stock stream.
+    bool op_stream_live = false;
+    if (chrysler_susw_lkas_tx_seen) {
+      const uint32_t ts_elapsed = safety_get_ts_elapsed(microsecond_timer_get(), chrysler_susw_lkas_tx_ts);
+      op_stream_live = ts_elapsed < CHRYSLER_SUSW_LKAS_TX_TIMEOUT;
+    }
+    block_msg = controls_allowed && op_stream_live;
   }
 
   return block_msg;
@@ -202,6 +215,10 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
     const bool steer_req = GET_BIT(msg, 12U);
     if (steer_torque_cmd_checks(desired_torque, steer_req, CHRYSLER_SUSW_STEERING_LIMITS)) {
       tx = false;
+    }
+    if (tx) {
+      chrysler_susw_lkas_tx_ts = microsecond_timer_get();
+      chrysler_susw_lkas_tx_seen = true;
     }
   }
 

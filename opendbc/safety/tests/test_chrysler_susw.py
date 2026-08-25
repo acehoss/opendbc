@@ -123,20 +123,68 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x547))
 
   def test_stock_lkas_command_forwarding(self):
-    # G3: stock LaneSense has to keep working while openpilot is inactive, so the camera's
-    # LKAS_COMMAND reaches the EPS whenever controls are not allowed, and is refused as soon as
-    # openpilot is actuating so the two commands can never fight on the car-side bus.
+    # controls_allowed alone is not evidence that openpilot is sending. Until an LKAS_COMMAND has
+    # passed the tx hook, the stock camera remains the sole sender.
     for controls_allowed in (False, True):
       self.safety.set_controls_allowed(controls_allowed)
-      self.assertEqual(-1 if controls_allowed else 0, self.safety.safety_fwd_hook(2, 0x1F6))
-      # openpilot's own command is never forwarded back to the camera
+      self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+      # openpilot's own command is never forwarded back to the camera, and other addresses are unchanged
       self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x1F6))
+      self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F5))
+
+  def test_stock_lkas_command_forwarding_timeout(self):
+    self.safety.set_timer(0)
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+
+    for t_us, forwarded in ((0, -1), (40000, -1), (50000, 0), (60000, 0)):
+      with self.subTest(t_us=t_us):
+        self.safety.set_timer(t_us)
+        self.assertEqual(forwarded, self.safety.safety_fwd_hook(2, 0x1F6))
+
+  def test_refused_lkas_command_does_not_refresh_forwarding_timeout(self):
+    self.safety.set_timer(0)
+    self.safety.set_controls_allowed(True)
+    self.assertFalse(self._tx(self._torque_cmd_msg(1000)))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.safety.set_timer(10000)
+    self.assertFalse(self._tx(self._torque_cmd_msg(1000)))
+    self.safety.set_timer(20000)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.safety.set_timer(50000)
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+
+  def test_controls_drop_forwards_stock_lkas_command_immediately(self):
+    self.safety.set_timer(0)
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+
+    self.safety.set_controls_allowed(False)
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+
+  def test_reinit_clears_lkas_command_stream(self):
+    self.safety.set_timer(0)
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(True)
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
 
   def test_stock_lkas_command_forwarding_follows_engagement(self):
     # the same thing driven through the real engagement path rather than set_controls_allowed()
     self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
     self._engage()
     self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.set_timer(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
 
     # LaneSense off drops controls, and the stock command is handed back to the EPS
