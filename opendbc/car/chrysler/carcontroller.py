@@ -108,13 +108,13 @@ class CarController(CarControllerBase):
         # 0x1F6 unless it is the intended controller, or the EPS would see two 100 Hz senders running
         # two independent counter sequences and reject both.
         #
-        # RESIDUAL, for the bench before actuation: the two predicates are deliberately different.
-        # The panda blocks stock on controls_allowed (ACC engaged AND LaneSense on); this gate is
-        # CC.latActive. In the window where openpilot is enabled but lateral is not active - driver
-        # torque override, blinker, below minSteerSpeed - the stock frame is blocked and openpilot
-        # sends nothing, so the EPS sees NO 0x1F6 at all until one side or the other changes. Erring
-        # this way keeps the two-sender case impossible, which is the one that could fight the driver;
-        # how long the EPS tolerates a command gap is unmeasured and is a bench item.
+        # RESIDUAL, for the bench before actuation: the panda blocks stock only while controls_allowed
+        # and openpilot's last accepted 0x1F6 is less than 50 ms old; this gate remains CC.latActive.
+        # Below minSteerSpeed, during calibration, and across disable transitions, openpilot is silent
+        # and the timeout hands the EPS back to stock. The M4 parked-EPS measurement in AH-148 sets the
+        # final timeout; the provisional value allows a bounded hand-over gap, while an openpilot-first
+        # transition can put both senders on the wire for at most one frame. Driver torque override and
+        # blinkers do not clear latActive in this openpilot: overriding remains an ACTIVE state.
         if CC.latActive:
           # Continue the stock camera's counter across the hand-over: the camera keeps transmitting
           # while the panda blocks it, so CS.lkas_counter is the last value the EPS would have seen.

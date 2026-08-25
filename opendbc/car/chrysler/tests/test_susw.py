@@ -4,11 +4,14 @@ from opendbc.can import CANDefine, CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
 from opendbc.car.car_helpers import can_fingerprint
+from opendbc.car.structs import CarParams
 from opendbc.car.fingerprints import _FINGERPRINTS as ALL_FINGERPRINTS
 from opendbc.car.chrysler.chryslercan import create_comma_heartbeat, create_lkas_command
 from opendbc.car.chrysler.fingerprints import FINGERPRINTS
 from opendbc.car.chrysler.interface import CarInterface
 from opendbc.car.chrysler.values import CAR, CarControllerParams
+from opendbc.safety.tests.common import CANPackerSafety, make_msg
+from opendbc.safety.tests.libsafety import libsafety_py
 
 ButtonType = structs.CarState.ButtonEvent.Type
 GearShifter = structs.CarState.GearShifter
@@ -739,6 +742,107 @@ class TestSuswCarController(SuswTestBase):
   @classmethod
   def _control_bits(cls, sent):
     return [bool(dat[1] & 0x10) for dat in cls._lkas(sent)]
+
+
+class TestSuswHandover(SuswTestBase):
+  def setUp(self):
+    super().setUp()
+    self.safety = libsafety_py.libsafety
+    self.safety.set_safety_hooks(CarParams.SafetyModel.chryslerSusw, 0)
+    self.safety.init_tests()
+    self.safety_packer = CANPackerSafety("chrysler_susw")
+    self.t_us = 0
+
+  def _step(self, *, acc_engaged: bool, lanesense_on: bool, lat_active: bool, v_ego: float) -> int:
+    self.safety.set_timer(self.t_us)
+
+    # Pack one physical copy of every safety-checked message, then feed those same bytes to both
+    # layers. LaneSense goes first so its state is current when the 100 Hz ACC frame evaluates G3.
+    rx_values = (
+      ("LKA_HUD_2", 2, {"LANESENSE_DISABLED": int(not lanesense_on)}),
+      ("ABS_3", 0, {"BRAKE_PEDAL_SWITCH": 0}),
+      ("ABS_6", 0, {"VEHICLE_SPEED": v_ego}),
+      ("EPS_2", 0, {"DRIVER_TORQUE": 0}),
+      ("ACCEL_PEDAL_DRIVER", 0, {"ACCEL_PEDAL_DRIVER": 0}),
+      ("CRUISE_BUTTONS", 1, {}),
+      ("ACC_STATUS_1", 1, {"ACC_ENGAGED": int(acc_engaged)}),
+    )
+    packed = {}
+    for name, bus, values in rx_values:
+      addr, dat, packed_bus = self.safety_packer.make_can_msg(name, bus, values)
+      self.assertEqual(bus, packed_bus)
+      self.assertTrue(self.safety.safety_rx_hook(make_msg(bus, addr, len(dat), dat)), name)
+      packed[name] = dat.hex()
+
+    pt = DRIVING | {name: packed[name] for name in ("ABS_3", "ABS_6", "EPS_2", "ACCEL_PEDAL_DRIVER")}
+    adas = {
+      "ACC_HUD": HUD_ENGAGED_60 if acc_engaged else HUD_READY,
+      "ACC_STATUS_1": packed["ACC_STATUS_1"],
+      "CRUISE_BUTTONS": packed["CRUISE_BUTTONS"],
+    }
+    CS = self.update(pt, adas, {"LKA_HUD_2": packed["LKA_HUD_2"]})
+    self.assertEqual(acc_engaged and lanesense_on, self.safety.get_controls_allowed())
+    self.assertEqual(acc_engaged and lanesense_on, CS.cruiseState.enabled)
+
+    CC = structs.CarControl()
+    CC.enabled = CS.cruiseState.enabled
+    CC.latActive = lat_active
+    CC.actuators.torque = 0.
+
+    _, can_sends = self.CI.apply(CC.as_reader(), self.nanos)
+    accepted_op = 0
+    for addr, dat, bus in can_sends:
+      if bus == 0:
+        accepted = self.safety.safety_tx_hook(make_msg(bus, addr, len(dat), dat))
+        if (addr == 0x1f6) and accepted:
+          accepted_op += 1
+
+    self.assertLessEqual(accepted_op, 1)
+    stock_forwarded = self.safety.safety_fwd_hook(2, 0x1f6) == 0
+    self.t_us += 10000
+    return accepted_op + int(stock_forwarded)
+
+  def _phase(self, frames: int = 30, **kwargs) -> list[int]:
+    return [self._step(**kwargs) for _ in range(frames)]
+
+  def test_acc_handover_has_one_sender(self):
+    off_before = self._phase(acc_engaged=False, lanesense_on=True, lat_active=False, v_ego=20.)
+    on = self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
+    off_after = self._phase(acc_engaged=False, lanesense_on=True, lat_active=False, v_ego=20.)
+    self.assertEqual(off_before + on + off_after, [1] * 90)
+
+  def test_lanesense_handover_has_one_sender(self):
+    off_before = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
+    on = self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
+    off_after = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
+    self.assertEqual(off_before + on + off_after, [1] * 90)
+
+  def test_lat_active_handover_gap_is_bounded_by_the_timeout(self):
+    inactive_before = self._phase(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
+    active = self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
+    inactive_after = self._phase(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
+
+    # exactly one sender while inactive (the defect this closes: stock used to be blocked here) and
+    # while active, including the hand-over frame itself
+    self.assertEqual(inactive_before + active, [1] * 60)
+    # Hand-back is the accepted residual of the accepted-stream gate: openpilot goes silent at once
+    # and stock stays blocked until its last accepted command is CHRYSLER_SUSW_LKAS_TX_TIMEOUT old,
+    # so the EPS sees a gap of at most timeout - 1 frame (4 x 10 ms at the provisional 50 ms) and
+    # never two senders. The final bound comes from the parked-EPS gap measurement (AH-148).
+    self.assertEqual(inactive_after[:4], [0] * 4)
+    self.assertEqual(inactive_after[4:], [1] * 26)
+
+  def test_min_steer_speed_handover_gap_is_bounded_by_the_timeout(self):
+    phases = []
+    for v_ego in (15., 17., 15.):
+      phases.append(self._phase(acc_engaged=True, lanesense_on=True,
+                                lat_active=v_ego >= self.CP.minSteerSpeed, v_ego=v_ego))
+
+    # below minSteerSpeed stock steers (one sender, no gap); crossing up hands over cleanly; crossing
+    # back down leaves the same bounded hand-back gap as test_lat_active_handover_gap_is_bounded_by_the_timeout
+    self.assertEqual(phases[0] + phases[1], [1] * 60)
+    self.assertEqual(phases[2][:4], [0] * 4)
+    self.assertEqual(phases[2][4:], [1] * 26)
 
 
 class TestSuswDbc(unittest.TestCase):
