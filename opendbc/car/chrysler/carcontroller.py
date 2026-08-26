@@ -77,7 +77,10 @@ class CarController(CarControllerBase):
         if CS.out.vEgo < (self.CP.minSteerSpeed - 2.0):
           lkas_control_bit = False
       elif susw:
-        # stock LaneSense hysteresis: arms at ~16.0 m/s, drops out at ~14.9 m/s on both captured drives
+        # stock LaneSense hysteresis is 1.1 m/s wide (arms ~16.0, drops out ~14.9 m/s on both captured
+        # drives). minSteerSpeed is the stock drop-out, so the control bit falls at 13.8 m/s, still above
+        # the EPS's ~13.6 m/s LKA_LOW_SPEED_INHIBIT. In practice openpilot clears latActive at exactly
+        # minSteerSpeed, so this band only matters if latActive ever outlives the speed gate.
         if CS.out.vEgo < (self.CP.minSteerSpeed - 1.1):
           lkas_control_bit = False
 

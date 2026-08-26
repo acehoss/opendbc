@@ -83,11 +83,15 @@ class CAR(Platforms):
   )
   # FCA 2023 Renegade press kit (2023_JP_Renegade_SP.pdf): curb 3320 lb (1513 kg) 4x4 1.3T, wheelbase 101.2 in,
   # steering overall ratio 15.7. Front/rear weight split is not published.
-  # minSteerSpeed is measured: LaneSense arms at ~16.0 m/s on both captured drives (rising edges of
-  # LKAS_CONTROL_BIT, min 15.86 / 16.01 m/s) and drops out at ~14.9 m/s (falling edges 14.88 / 14.91).
+  # minSteerSpeed is measured from the stock camera: LaneSense arms at ~16.0 m/s on both captured drives
+  # (rising edges of LKAS_CONTROL_BIT, min 15.86 / 16.01 m/s) and drops out at ~14.9 m/s (falling edges
+  # 14.88 / 14.91). The EPS accepted the control bit down to 14.86 m/s, so 14.9 is the floor of the
+  # measured stock envelope. openpilot gates latActive at exactly minSteerSpeed (no hysteresis), and on
+  # the 2026-08-26 city drives 16.0 kept openpilot out for 36 % of the ACC-engaged time (AH-161).
+  # Below 14.9 m/s is unmeasured: the EPS's own LKA_LOW_SPEED_INHIBIT sits at ~13.6 m/s (AH-149).
   JEEP_RENEGADE = ChryslerPlatformConfig(
     [ChryslerCarDocs("Jeep Renegade 2023", package="Adaptive Cruise Control (ACC) & LaneSense")],
-    ChryslerCarSpecs(mass=1513., wheelbase=2.570, steerRatio=15.7, minSteerSpeed=16.0),
+    ChryslerCarSpecs(mass=1513., wheelbase=2.570, steerRatio=15.7, minSteerSpeed=14.9),
     # Bus.pt is the camera-side powertrain bus (bus 0), Bus.adas is the private fusion bus (bus 1) that
     # a gateway populates with the three raw CAN C ACC messages. Same DBC, parsed on two buses.
     {Bus.pt: 'chrysler_susw', Bus.adas: 'chrysler_susw'},
@@ -131,23 +135,26 @@ class CarControllerParams:
       # The stock camera rate limits at exactly 6 counts per 10 ms frame in both directions and never
       # exceeds it in 673,913 captured frames (nonzero |delta| histogram peaks hard at 6 on both
       # drives). We ramp up one count slower than stock and release at the stock rate.
-      # NOTE: this does NOT buy ISO lateral-jerk headroom. test_lateral_limits clips the 0.5 s ramp
-      # at full torque, and 5/250 at 100 Hz still saturates that clip, so the up-jerk stays at
-      # exactly 3.000 m/s^3 - the tolerance limit - just as it was at 6. Only STEER_DELTA_UP <= 4
-      # (2.400, the Cherokee number) actually creates margin. Revisit once real Renegade torque
-      # params replace the substituted Cherokee MAX_LAT_ACCEL_MEASURED = 1.5 this depends on.
+      # ISO lateral jerk (test_lateral_limits): 5 counts/frame over a 383 cap reaches 65 % of the
+      # substituted Cherokee MAX_LAT_ACCEL_MEASURED = 1.5 in 0.5 s, i.e. 1.96 m/s^3 up, under the
+      # 2.5 + 0.5 limit. Revisit once real Renegade torque params replace the substitute.
       self.STEER_DELTA_UP = 5
       self.STEER_DELTA_DOWN = 6
-      # TODO: the stock camera reaches 383, but the EPS ceiling has not been probed. Stay conservative.
-      self.STEER_MAX = 250
+      # The measured stock envelope: the camera commands up to 383 (route 000000d8, -346..+383) and the
+      # EPS takes it without a fault, so 383 is proven accepted. The EPS's own ceiling above that is
+      # unprobed (AH-149). Raised from the CUSW placeholder 250 after the 2026-08-26 drives, where the
+      # assist felt weak (AH-161). Note the torque params are still the Cherokee substitute, so this
+      # scales every command by 383/250 for the same lateral-acceleration request.
+      self.STEER_MAX = 383
       # SUSW limits against EPS_2.DRIVER_TORQUE (TorqueDriverLimited), not the motor torque:
       # TORQUE_MOTOR is only ~0.23-0.25x the command, so |command - TORQUE_MOTOR| reaches 397 and the
       # stock camera's own frames would fail a TorqueMotorLimited check 36-44 % of the time.
       # With TorqueMotorLimited dropped this allowance is the entire override margin, so it is set
       # below STEER_THRESHOLD = 120 rather than just under it: limiting begins at 80 driver counts,
-      # and the command is forced to zero at 250 + (80 - d) * 3 = 0, i.e. d ~= 163 counts. For
-      # scale, the captured normal-driving frame has the driver at 125 and the parked lock-to-lock
-      # sweep saturates the sensor at 1024.
+      # and the command is forced to zero at 383 + (80 - d) * 3 = 0, i.e. d ~= 208 counts. For
+      # scale, the captured normal-driving frame has the driver at 125, resting hands on the
+      # 2026-08-26 drive 00000113 read p50 43 / p90 103 counts while openpilot steered, and the
+      # parked lock-to-lock sweep saturates the sensor at 1024.
       self.STEER_DRIVER_ALLOWANCE = 80
       self.STEER_DRIVER_MULTIPLIER = 3
       self.STEER_DRIVER_FACTOR = 1
