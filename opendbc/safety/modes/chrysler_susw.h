@@ -179,8 +179,9 @@ static bool chrysler_susw_fwd_hook(int bus_num, int addr) {
 
 static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
   const TorqueSteeringLimits CHRYSLER_SUSW_STEERING_LIMITS = {
-    // TODO: placeholder, the stock camera peaks at 383 on the measured routes
-    .max_torque = 250,
+    // The stock camera's measured peak (route 000000d8, -346..+383), accepted by the EPS. The EPS's
+    // own ceiling is unprobed (AH-149).
+    .max_torque = 383,
     // the stock camera rate limits at exactly 6 counts per 10 ms frame in both directions. Ramping
     // up is held one count below that for lateral jerk headroom, since the torque cap and the
     // steering ratio behind it are still borrowed numbers; releasing torque keeps the full 6.
@@ -192,9 +193,9 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
     // At 150 a legal ramp was blocked at frame 26 and then latched off, because the violation
     // zeroes desired_torque_last while openpilot keeps climbing.
     .max_rt_delta = 180,
-    // The driver takes the torque away at allowance + max_torque/multiplier = 80 + 250/3 = 163
-    // counts, ~1.36x the 120 count hands-on threshold. The worst hands-off |DRIVER_TORQUE| seen in
-    // 6740 s of driving is 87, which costs (87 - 80) * 3 = 21 counts of the 250 cap, so ordinary
+    // The driver takes the torque away at allowance + max_torque/multiplier = 80 + 383/3 = 208
+    // counts, ~1.73x the 120 count hands-on threshold. The worst hands-off |DRIVER_TORQUE| seen in
+    // 6740 s of driving is 87, which costs (87 - 80) * 3 = 21 counts of the 383 cap, so ordinary
     // road noise cannot wind the assist down on its own.
     .driver_torque_allowance = 80,
     .driver_torque_multiplier = 3,

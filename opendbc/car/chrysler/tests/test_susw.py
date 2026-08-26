@@ -694,7 +694,7 @@ class TestSuswCarController(SuswTestBase):
     self.assertEqual(params.STEER_STEP, 1)               # 100 Hz, like the stock camera
     self.assertEqual(params.STEER_DELTA_UP, 5)           # one count under the measured stock max
     self.assertEqual(params.STEER_DELTA_DOWN, 6)         # release at the stock rate
-    self.assertEqual(params.STEER_MAX, 250)              # stock reaches 383, we stay conservative
+    self.assertEqual(params.STEER_MAX, 383)              # the stock camera's measured peak (route 000000d8)
 
   def test_driver_torque_limiting(self):
     # SUSW limits against DRIVER_TORQUE, so driver torque opposing the command clamps it
@@ -704,8 +704,8 @@ class TestSuswCarController(SuswTestBase):
     self.assertEqual(params.STEER_DRIVER_FACTOR, 1)
 
     torques = [dat[0] << 3 | dat[1] >> 5 for dat in self._lkas(self._run(400, 20., torque=1.0))]
-    # DRIVING carries DRIVER_TORQUE = -125, so max allowed = 250 + (80 - 125) * 3 = 115
-    self.assertEqual(max(t - 1024 for t in torques), 115)
+    # DRIVING carries DRIVER_TORQUE = -125, so max allowed = 383 + (80 - 125) * 3 = 248
+    self.assertEqual(max(t - 1024 for t in torques), 248)
 
   def test_control_bit_below_min_steer_speed(self):
     # the control bit never comes on below the stock LaneSense drop-out speed, however long we drive
@@ -715,12 +715,13 @@ class TestSuswCarController(SuswTestBase):
     self.assertTrue(self._control_bits(self._run(400, self.CP.minSteerSpeed + 1.0))[-1])
 
   def test_min_steer_speed_hysteresis(self):
-    # stock arms at 16.0 m/s and drops out at 14.9 m/s. Probe either side of 14.9, not either side
-    # of some wider band, so that a wrong hysteresis value cannot pass.
-    self.assertEqual(self.CP.minSteerSpeed, 16.0)
+    # minSteerSpeed is the stock drop-out (14.9 m/s); the control bit keeps the stock 1.1 m/s band
+    # below it and falls at 13.8 m/s. Probe either side of 13.8, not either side of some wider band,
+    # so that a wrong hysteresis value cannot pass.
+    self.assertAlmostEqual(self.CP.minSteerSpeed, 14.9, places=5)
     self._run(300, self.CP.minSteerSpeed + 1.0)
-    self.assertTrue(all(self._control_bits(self._run(50, 15.0))))
-    self.assertFalse(any(self._control_bits(self._run(50, 14.8))))
+    self.assertTrue(all(self._control_bits(self._run(50, 13.9))))
+    self.assertFalse(any(self._control_bits(self._run(50, 13.7))))
 
   def test_reenable_guard(self):
     # EPS faults if LKAS re-enables too quickly, so the control bit is held off for 200 frames
@@ -834,7 +835,7 @@ class TestSuswHandover(SuswTestBase):
 
   def test_min_steer_speed_handover_gap_is_bounded_by_the_timeout(self):
     phases = []
-    for v_ego in (15., 17., 15.):
+    for v_ego in (14., 17., 14.):
       phases.append(self._phase(acc_engaged=True, lanesense_on=True,
                                 lat_active=v_ego >= self.CP.minSteerSpeed, v_ego=v_ego))
 
