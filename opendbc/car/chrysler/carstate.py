@@ -1,6 +1,6 @@
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
-from opendbc.car.chrysler.values import CUSW_CARS, DBC, STEER_THRESHOLD, RAM_CARS, SUSW_CARS
+from opendbc.car.chrysler.values import CUSW_CARS, DBC, STEER_THRESHOLD, SUSW_STEER_THRESHOLD, RAM_CARS, SUSW_CARS
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 
@@ -264,7 +264,7 @@ class CarState(CarStateBase):
     ret.steeringRateDeg = self.susw_steering_rate
     ret.steeringTorque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
     ret.steeringTorqueEps = cp.vl["EPS_2"]["TORQUE_MOTOR"]
-    ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD
+    ret.steeringPressed = abs(ret.steeringTorque) > SUSW_STEER_THRESHOLD
     # EPS_2.LKA_FAULT -> steerFaultTemporary is an EXPLICIT DECISION MADE WITHOUT A POSITIVE SAMPLE,
     # not an accident. The bit is 0 on 100 % of 674k captured frames across every route, so nothing in
     # the data distinguishes a recoverable EPS objection from a latching one, and the temporary vs

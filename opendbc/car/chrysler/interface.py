@@ -38,8 +38,8 @@ class CarInterface(CarInterfaceBase):
     elif candidate in SUSW_CARS:
       ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.chryslerSusw)]
 
-    # SUSW borrows the CUSW (Jeep Cherokee) torque params via torque_data/substitute.toml. They are a
-    # placeholder: no lateral actuation route exists for the Renegade yet to fit real params.
+    # SUSW carries its own measured torque params in torque_data/override.toml, fitted from route
+    # 00000123 (2026-08-27, 6754 s of actuation) with torqued's total-least-squares estimator.
     CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
     if candidate not in (RAM_CARS | SUSW_CARS):
       # Newer FW versions standard on the following platforms, or flashed by a dealer onto older platforms have a higher minimum steering speed.

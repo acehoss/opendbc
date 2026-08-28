@@ -136,8 +136,8 @@ class CarControllerParams:
       # exceeds it in 673,913 captured frames (nonzero |delta| histogram peaks hard at 6 on both
       # drives). We ramp up one count slower than stock and release at the stock rate.
       # ISO lateral jerk (test_lateral_limits): 5 counts/frame over a 383 cap reaches 65 % of the
-      # substituted Cherokee MAX_LAT_ACCEL_MEASURED = 1.5 in 0.5 s, i.e. 1.96 m/s^3 up, under the
-      # 2.5 + 0.5 limit. Revisit once real Renegade torque params replace the substitute.
+      # measured MAX_LAT_ACCEL_MEASURED = 1.4 in 0.5 s, i.e. 1.83 m/s^3 up, under the 2.5 + 0.5
+      # limit. Down is 2.19 of 5.0. Revisit if STEER_MAX moves.
       self.STEER_DELTA_UP = 5
       self.STEER_DELTA_DOWN = 6
       # The measured stock envelope: the camera commands up to 383 (route 000000d8, -346..+383) and the
@@ -150,12 +150,14 @@ class CarControllerParams:
       # TORQUE_MOTOR is only ~0.23-0.25x the command, so |command - TORQUE_MOTOR| reaches 397 and the
       # stock camera's own frames would fail a TorqueMotorLimited check 36-44 % of the time.
       # With TorqueMotorLimited dropped this allowance is the entire override margin, so it is set
-      # below STEER_THRESHOLD = 120 rather than just under it: limiting begins at 80 driver counts,
-      # and the command is forced to zero at 383 + (80 - d) * 3 = 0, i.e. d ~= 208 counts. For
-      # scale, the captured normal-driving frame has the driver at 125, resting hands on the
-      # 2026-08-26 drive 00000113 read p50 43 / p90 103 counts while openpilot steered, and the
-      # parked lock-to-lock sweep saturates the sensor at 1024.
-      self.STEER_DRIVER_ALLOWANCE = 80
+      # Raised 80 -> 160 on 2026-08-27 (AH-161). At 80 the clamp lowered the opposing-direction
+      # ceiling on 37.6 % of engaged frames of route 00000123 (6754 s, one deliberate intervention),
+      # holding the command to 152 of 383 in the worst 5 %; resting hands ran p90 137 / p99.5 208,
+      # so ordinary hands-on driving was trimming the assist. At 160 the clamp is active on 4.4 %.
+      # Override authority is still real and measured: the command is forced to zero at
+      # 383 + (160 - d) * 3 = 0, i.e. d ~= 288 counts, against a 360 count peak actually applied on
+      # that drive. The parked lock-to-lock sweep saturates the sensor at 1024.
+      self.STEER_DRIVER_ALLOWANCE = 160
       self.STEER_DRIVER_MULTIPLIER = 3
       self.STEER_DRIVER_FACTOR = 1
     else:
@@ -165,6 +167,17 @@ class CarControllerParams:
 
 
 STEER_THRESHOLD = 120
+
+# SUSW only. 120 was inherited from the other Chrysler platforms and sits far below this car's
+# resting-hands torque: over 6754 s of engaged driving on route 00000123 (2026-08-27, one
+# deliberate intervention in 112 minutes) |DRIVER_TORQUE| ran p50 62, p90 137, p95 157, p99 194,
+# p99.5 208, and 16.2 % of engaged frames read as an override that never happened. That matters
+# beyond the UI: steeringPressed freezes the lateral PID integrator and suppresses the
+# steerSaturated alert, so a threshold this low both weakens tracking and hides the warning.
+# 160 is a deliberate first step rather than the ~220 the p99.5 would support - raise further if
+# hands-on driving still reads as override. Driver override AUTHORITY is unchanged: that is
+# STEER_DRIVER_ALLOWANCE, a separate safety parameter, still 80 (AH-161).
+SUSW_STEER_THRESHOLD = 160
 
 RAM_DT = {CAR.RAM_1500_5TH_GEN, }
 RAM_HD = {CAR.RAM_HD_5TH_GEN, }

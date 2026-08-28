@@ -101,6 +101,16 @@ legend = ["LAT_ACCEL_FACTOR", "MAX_LAT_ACCEL_MEASURED", "FRICTION"]
 "TOYOTA_RAV4_TSS2_2022" = [1.9, 1.9304407208090029, 0.112174]
 "KIA_K7_2017" = [2.2, 2.2, 0.1]
 "JEEP_CHEROKEE_5TH_GEN" = [1.5, 1.5, 0.15]
+# Measured on the car, not substituted (AH-161). Route 873a474e9ad72abb|00000123--304f9442ee,
+# 2026-08-27: 6754 s of lateral actuation, 48-74 mph, 104631 points passing torqued's own filters
+# (lat_active, no override, v > 15 m/s, |torque| > 0.02, |lat_accel| <= 1). Fitted with torqued's
+# total-least-squares estimator over its own steer buckets, all buckets valid:
+#   latAccelFactor 1.195 (5-95 % 1.15-1.25), friction 0.228. Plain OLS gives 0.74 and is wrong
+#   here - torque is a noisy regressor, which attenuates the slope by ~40 %.
+# MAX_LAT_ACCEL_MEASURED is the p99.5 of |lat_accel| while engaged (1.36; 1.52 over the whole
+# route), consistent with the fleet convention for this family (Grand Cherokee 1.41, Pacifica
+# 1.34-1.51). At 1.4 the ISO jerk check leaves STEER_DELTA_UP at 5 (1.83 of 3.0 m/s^3 up).
+"JEEP_RENEGADE" = [1.20, 1.4, 0.23]
 "ACURA_MDX_4G" = [1.4, 1.4, 0.17]
 "ACURA_RDX_3G_MMR" = [1.5, 1.5, 0.16]
 
