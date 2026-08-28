@@ -54,8 +54,9 @@ class CarState(CarStateBase):
     self.auto_high_beam = 0
     self.button_counter = 0
     self.lkas_car_model = -1
-    # the stock camera's own LKAS_COMMAND counter, mirrored so openpilot can continue its sequence
-    self.lkas_counter = 0
+    self.lkas_fwd_counter = 0
+    self.lkas_fwd_nanos = 0
+    self.lkas_cam_control_bit = False
     self.susw_button = 0
     self.susw_steering_angle = 0.
     self.susw_steering_rate = 0.
@@ -203,8 +204,8 @@ class CarState(CarStateBase):
     return ret
 
   def update_susw(self, cp, cp_cam, cp_fusion):
-    # cp: bus 0, the camera-side "CAN CH" bus. cp_cam: bus 2, the stock camera, which is where the
-    # camera's own LKAS_COMMAND and LKA_HUD_2 arrive before the panda forwards them to bus 0.
+    # cp: bus 0, the car-side "CAN CH" bus. cp_cam: bus 2, the stock camera, which is where the
+    # camera's own LKAS_COMMAND and LKA_HUD_2 arrive before the panda selectively forwards them.
     # cp_fusion: bus 1, where a gateway republishes the three raw CAN C ACC messages.
     ret = structs.CarState()
 
@@ -287,9 +288,11 @@ class CarState(CarStateBase):
     lanesense_disabled = not cp_cam.ts_nanos["LKA_HUD_2"]["LANESENSE_DISABLED"] or \
                          bool(cp_cam.vl["LKA_HUD_2"]["LANESENSE_DISABLED"])
 
-    # The stock camera keeps sending 0x1F6 even while the panda is blocking it, so this stays live
-    # through an engagement and the CarController can resume the counter from it at hand-over.
-    self.lkas_counter = int(cp_cam.vl["LKAS_COMMAND"]["COUNTER"])
+    # Bus 0 sees only stock frames that reached the EPS. Use that copy to resync at a hand-over;
+    # bus 2 stays live while blocked and supplies the camera's control bit for the idle stream.
+    self.lkas_fwd_counter = int(cp.vl["LKAS_COMMAND"]["COUNTER"])
+    self.lkas_fwd_nanos = int(cp.ts_nanos["LKAS_COMMAND"]["COUNTER"])
+    self.lkas_cam_control_bit = bool(cp_cam.vl["LKAS_COMMAND"]["LKAS_CONTROL_BIT"])
 
     # The three ACC messages only reach bus 1 once the RPGW gateway is in INTERCEPT, which needs
     # openpilot's heartbeat, which dashcam mode never transmits. They are registered with a nan
@@ -357,6 +360,7 @@ class CarState(CarStateBase):
         ("EPS_2", 100),
         ("DOORS", 2),             # 2 Hz plus on change
         ("STEERING_LEVERS", 4),   # 4 Hz plus on change
+        ("LKAS_COMMAND", float('nan')),
       ]
       # The gateway copies exactly these three raw CAN C messages onto the private fusion bus, at
       # 100 / 50 / 1 Hz respectively. They are registered with a nan frequency, which is opendbc's
@@ -368,9 +372,9 @@ class CarState(CarStateBase):
         ("CRUISE_BUTTONS", float('nan')),
         ("ACC_HUD", float('nan')),
       ]
-      # LKAS_COMMAND is read on bus 2 for its COUNTER only. The panda forwards the stock camera's
-      # 0x1F6 to the EPS while openpilot is inactive and blocks it while controls are allowed, so the
-      # CarController has to pick the sequence up where the camera left it - see carcontroller.py.
+      # Bus 2 LKAS_COMMAND supplies the camera's control bit, mirrored while openpilot is not
+      # steering. Bus 0 LKAS_COMMAND is the forwarded copy and supplies counter resync at hand-over;
+      # it uses the nan "never time out" frequency because it is absent while openpilot owns 0x1F6.
       cam_messages = [
         ("LKA_HUD_2", 4),
         ("LKAS_COMMAND", 100),

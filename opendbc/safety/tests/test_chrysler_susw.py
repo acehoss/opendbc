@@ -28,8 +28,8 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   TX_MSGS = [[0x1F6, 0], [0x5F0, 1]]
   STANDSTILL_THRESHOLD = 0
   RELAY_MALFUNCTION_ADDRS = {0: (0x1F6,)}
-  # nothing is blocked statically: the stock camera's LKAS_COMMAND is only refused while openpilot
-  # is actuating, which chrysler_susw_fwd_hook() decides, see test_stock_lkas_command_forwarding
+  # nothing is blocked statically: the stock camera's LKAS_COMMAND is blocked only while openpilot's
+  # accepted stream is live, which chrysler_susw_fwd_hook() decides, see test_stock_lkas_command_forwarding
   FWD_BLACKLISTED_ADDRS: dict[int, list[int]] = {}
   FWD_BUS_LOOKUP = {0: 2, 2: 0}
 
@@ -123,14 +123,32 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x547))
 
   def test_stock_lkas_command_forwarding(self):
-    # controls_allowed alone is not evidence that openpilot is sending. Until an LKAS_COMMAND has
-    # passed the tx hook, the stock camera remains the sole sender.
+    # Until an LKAS_COMMAND passes the tx hook, stock remains the sole sender. Once openpilot has an
+    # accepted stream it owns the address regardless of controls_allowed.
     for controls_allowed in (False, True):
-      self.safety.set_controls_allowed(controls_allowed)
-      self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
-      # openpilot's own command is never forwarded back to the camera, and other addresses are unchanged
-      self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x1F6))
-      self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F5))
+      with self.subTest(controls_allowed=controls_allowed):
+        self._reset_safety_hooks()
+        self.safety.set_controls_allowed(controls_allowed)
+        self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+        self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x1F6))   # other direction unchanged
+        self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+        self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F5))
+
+  def test_idle_control_bit_values_refresh_forwarding_timeout(self):
+    self.safety.set_controls_allowed(False)
+    self.safety.set_timer(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0, steer_req=1)))
+
+    self.safety.set_timer(40000)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.assertTrue(self._tx(self._torque_cmd_msg(0, steer_req=0)))
+
+    self.safety.set_timer(80000)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.safety.set_timer(90000)
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
 
   def test_stock_lkas_command_forwarding_timeout(self):
     self.safety.set_timer(0)
@@ -143,29 +161,40 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
         self.assertEqual(forwarded, self.safety.safety_fwd_hook(2, 0x1F6))
 
   def test_refused_lkas_command_does_not_refresh_forwarding_timeout(self):
-    self.safety.set_timer(0)
-    self.safety.set_controls_allowed(True)
-    self.assertFalse(self._tx(self._torque_cmd_msg(1000)))
-    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+    cases = (
+      (False, 1, "nonzero torque while controls are disallowed"),
+      (True, self.MAX_RATE_UP + 1, "rate-limit violation while controls are allowed"),
+    )
+    for controls_allowed, refused_torque, description in cases:
+      with self.subTest(description):
+        self._reset_safety_hooks()
+        self.safety.set_controls_allowed(controls_allowed)
+        self.safety.set_timer(0)
+        self.assertTrue(self._tx(self._torque_cmd_msg(0)))
 
-    self._reset_safety_hooks()
-    self.safety.set_timer(0)
-    self.safety.set_controls_allowed(True)
-    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
-    self.safety.set_timer(10000)
-    self.assertFalse(self._tx(self._torque_cmd_msg(1000)))
-    self.safety.set_timer(20000)
-    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
-    self.safety.set_timer(50000)
-    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+        self.safety.set_timer(10000)
+        self.assertFalse(self._tx(self._torque_cmd_msg(refused_torque)))
+        self.safety.set_timer(40000)
+        self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+        self.safety.set_timer(50000)
+        self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
 
-  def test_controls_drop_forwards_stock_lkas_command_immediately(self):
+  def test_controls_drop_keeps_stock_blocked_while_idle_stream_continues(self):
     self.safety.set_timer(0)
     self.safety.set_controls_allowed(True)
     self.assertTrue(self._tx(self._torque_cmd_msg(0)))
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
 
     self.safety.set_controls_allowed(False)
+    self.safety.set_timer(40000)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+
+    self.safety.set_timer(50000)
+    self.assertFalse(self._tx(self._torque_cmd_msg(1)))
+    self.safety.set_timer(89999)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.safety.set_timer(90000)
     self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
 
   def test_reinit_clears_lkas_command_stream(self):
@@ -187,10 +216,17 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertTrue(self._tx(self._torque_cmd_msg(0)))
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
 
-    # LaneSense off drops controls, and the stock command is handed back to the EPS
+    # LaneSense off drops controls, but the accepted torque-zero idle stream retains ownership.
     self.assertTrue(self._rx(self._lanesense_msg(True)))
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
     self.assertFalse(self.safety.get_controls_allowed())
+
+    self.safety.set_timer(10000)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.safety.set_timer(59999)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.safety.set_timer(60000)
     self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
 
   def test_gateway_bus_not_forwarded(self):
