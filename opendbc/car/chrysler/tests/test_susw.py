@@ -220,7 +220,7 @@ class TestSuswCarState(SuswTestBase):
     self.assertAlmostEqual(CS.steeringRateDeg, -1.0, places=3)
     self.assertEqual(CS.steeringTorque, -125)      # EPS_2.DRIVER_TORQUE
     self.assertEqual(CS.steeringTorqueEps, -9)     # EPS_2.TORQUE_MOTOR
-    self.assertTrue(CS.steeringPressed)            # |125| > STEER_THRESHOLD
+    self.assertFalse(CS.steeringPressed)           # |125| < SUSW_STEER_THRESHOLD 160: resting hands
     self.assertFalse(CS.steerFaultTemporary)
     self.assertFalse(CS.steerFaultPermanent)
 
@@ -699,13 +699,18 @@ class TestSuswCarController(SuswTestBase):
   def test_driver_torque_limiting(self):
     # SUSW limits against DRIVER_TORQUE, so driver torque opposing the command clamps it
     params = CarControllerParams(self.CP)
-    self.assertEqual(params.STEER_DRIVER_ALLOWANCE, 80)
+    self.assertEqual(params.STEER_DRIVER_ALLOWANCE, 160)
     self.assertEqual(params.STEER_DRIVER_MULTIPLIER, 3)
     self.assertEqual(params.STEER_DRIVER_FACTOR, 1)
 
+    # DRIVING carries DRIVER_TORQUE = -125. That is resting-hands territory on this car (route
+    # 00000123 p90 was 137), and under the 160 allowance it must NOT trim the command at all.
     torques = [dat[0] << 3 | dat[1] >> 5 for dat in self._lkas(self._run(400, 20., torque=1.0))]
-    # DRIVING carries DRIVER_TORQUE = -125, so max allowed = 383 + (80 - 125) * 3 = 248
-    self.assertEqual(max(t - 1024 for t in torques), 248)
+    self.assertEqual(max(t - 1024 for t in torques), params.STEER_MAX)
+
+    # A genuine override still takes it away: the ceiling is 383 + (160 - d) * 3, reaching zero at
+    # d ~= 288 counts. The full driver-limit envelope is exercised by the generic
+    # TorqueDriverSafetyTest in opendbc.safety.tests.test_chrysler_susw.
 
   def test_control_bit_below_min_steer_speed(self):
     # the control bit never comes on below the stock LaneSense drop-out speed, however long we drive

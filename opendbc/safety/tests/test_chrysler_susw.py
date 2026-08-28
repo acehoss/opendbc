@@ -37,7 +37,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   MAX_RATE_DOWN = 6
   MAX_TORQUE_LOOKUP = [0], [383]
   MAX_RT_DELTA = 180
-  DRIVER_TORQUE_ALLOWANCE = 80
+  DRIVER_TORQUE_ALLOWANCE = 160
   DRIVER_TORQUE_FACTOR = 3
 
   # (message, address, bus, checksum byte index or None, carries a counter, values that keep
