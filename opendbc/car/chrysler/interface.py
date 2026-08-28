@@ -19,8 +19,10 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "chrysler"
 
     # TODO: Chrysler CUSW in dashcam pending comma safety validation and a fix for LKAS fault on disengage
-    # TODO: Chrysler SUSW in dashcam pending comma safety validation and an on-car actuation test
-    ret.dashcamOnly = candidate in (RAM_HD | CUSW_CARS | SUSW_CARS)
+    # Chrysler SUSW (Jeep Renegade) lifted out of dashcam on the fork 2026-08-28: both AH-163 proofs
+    # met on the road (LaneSense OFF never allows controls; enable toggle OFF is fully stock), single-
+    # arbiter LKAS_COMMAND landed (AH-173). Not safety validated by comma - fork only.
+    ret.dashcamOnly = candidate in (RAM_HD | CUSW_CARS)
 
     # radar parsing needs some work, see https://github.com/commaai/openpilot/issues/26842
     ret.radarUnavailable = True # Bus.radar not in DBC[candidate][Bus.radar]
