@@ -17,11 +17,11 @@ ButtonType = structs.CarState.ButtonEvent.Type
 GearShifter = structs.CarState.GearShifter
 
 # Addresses of every message the SUSW port reads, see opendbc/dbc/chrysler_susw.dbc.
-# Bus 0 is the camera-side "CAN CH" bus, bus 1 is the private fusion bus fed by the gateway.
+# Bus 0 is the car-side "CAN CH" bus, bus 1 is the private fusion bus fed by the gateway.
 PT_ADDRS = {"EPS_1": 0xde, "ABS_1": 0xee, "ABS_3": 0xfa, "ENGINE_1": 0xfc,
             "ABS_6": 0x101, "EPS_2": 0x106, "ACCEL_PEDAL_DRIVER": 0x1f0,
             "SEATBELT_STATUS": 0x257, "DOORS": 0x4b1, "GEAR_2": 0x5a9,
-            "STEERING_LEVERS": 0x73e}
+            "STEERING_LEVERS": 0x73e, "LKAS_COMMAND": 0x1f6}
 ADAS_ADDRS = {"ACC_STATUS_1": 0x103, "CRUISE_BUTTONS": 0x2fa, "ACC_HUD": 0x73c}
 CAM_ADDRS = {"LKA_HUD_2": 0x547, "LKAS_COMMAND": 0x1f6}
 
@@ -196,11 +196,12 @@ class SuswTestBase(unittest.TestCase):
     self.CI = CarInterface(self.CP)
     self.nanos = 0
 
-  def update(self, pt: dict | None = None, adas: dict | None = None, cam: dict | None = None) -> structs.CarState:
+  def update(self, pt: dict | None = None, adas: dict | None = None, cam: dict | None = None,
+             nanos: int | None = None) -> structs.CarState:
     frames = [CanData(PT_ADDRS[n], bytes.fromhex(h), 0) for n, h in (pt or {}).items()]
     frames += [CanData(ADAS_ADDRS[n], bytes.fromhex(h), 1) for n, h in (adas or {}).items()]
     frames += [CanData(CAM_ADDRS[n], bytes.fromhex(h), 2) for n, h in (cam or {}).items()]
-    self.nanos += int(DT_CTRL * 1e9)
+    self.nanos = self.nanos + int(DT_CTRL * 1e9) if nanos is None else nanos
     return self.CI.update([(self.nanos, frames)])
 
 
@@ -635,15 +636,18 @@ class TestSuswCarController(SuswTestBase):
   def test_only_lkas_command_and_heartbeat_are_sent(self):
     # no cruise button TX and no HUD TX for SUSW, even when the controller asks to cancel and resume.
     # LKAS_COMMAND on bus 0 every frame, COMMA_HEARTBEAT on bus 1 every 10th frame, nothing else.
-    sent = self._run(300, 20., cancel=True, resume=True)
-    for frame, can_sends in enumerate(sent):
-      expected = [(0x1f6, 0)] + ([(0x5f0, 1)] if frame % 10 == 0 else [])
-      self.assertEqual(sorted((addr, bus) for addr, _, bus in can_sends), sorted(expected))
+    for lat_active in (True, False):
+      with self.subTest(lat_active=lat_active):
+        self.setUp()
+        sent = self._run(300, 20., lat_active=lat_active, cancel=True, resume=True)
+        for frame, can_sends in enumerate(sent):
+          expected = [(0x1f6, 0)] + ([(0x5f0, 1)] if frame % 10 == 0 else [])
+          self.assertEqual(sorted((addr, bus) for addr, _, bus in can_sends), sorted(expected))
 
-    heartbeats = [dat for can_sends in sent for addr, dat, _ in can_sends if addr == 0x5f0]
-    self.assertEqual(len(heartbeats), 30)                            # 300 frames at 100 Hz -> 10 Hz
-    self.assertTrue(all(dat[0] & 0x01 for dat in heartbeats))        # OPENPILOT_ALIVE always set
-    self.assertEqual([dat[6] & 0xf for dat in heartbeats], [c % 16 for c in range(30)])
+        heartbeats = [dat for can_sends in sent for addr, dat, _ in can_sends if addr == 0x5f0]
+        self.assertEqual(len(heartbeats), 30)                        # 300 frames at 100 Hz -> 10 Hz
+        self.assertTrue(all(dat[0] & 0x01 for dat in heartbeats))    # OPENPILOT_ALIVE always set
+        self.assertEqual([dat[6] & 0xf for dat in heartbeats], [c % 16 for c in range(30)])
 
   def test_lat_inactive_commands_zero_torque(self):
     # the control bit is already latched on and the command is full scale, so only latActive
@@ -653,33 +657,72 @@ class TestSuswCarController(SuswTestBase):
     self.assertTrue(all(dat[1] & 0x10 for dat in active))          # still armed
     self.assertNotEqual(max((dat[0] << 3 | dat[1] >> 5) - 1024 for dat in active), 0)
 
-    # with lateral inactive nothing is transmitted at all any more - the stock camera's frame is
-    # forwarded instead, see test_lkas_tx_is_gated_on_lat_active
-    self.assertEqual(self._lkas(self._run(50, 20., lat_active=False, torque=1.0)), [])
+    # The idle stream stays present but can never actuate, even with a stale full-scale request.
+    inactive = self._lkas(self._run(50, 20., lat_active=False, torque=1.0))
+    self.assertEqual(len(inactive), 50)
+    self.assertTrue(all((dat[0] << 3 | dat[1] >> 5) - 1024 == 0 for dat in inactive))
 
-  def test_lkas_tx_is_gated_on_lat_active(self):
-    # G3 hand-over: the panda forwards the stock camera's 0x1F6 to the EPS while openpilot is inactive
-    # (chrysler_susw_fwd_hook) and blocks it only while controls are allowed. openpilot must therefore
-    # be silent on 0x1F6 unless it is the intended controller, or the EPS sees two 100 Hz senders.
-    inactive = self._run(50, 20., lat_active=False, torque=1.0)
-    self.assertEqual([(addr, bus) for can_sends in inactive for addr, _, bus in can_sends],
-                     [(0x5f0, 1)] * 5)                            # heartbeat only, 10 Hz
+  def test_lkas_tx_is_continuous(self):
+    patterns = (
+      [False] * 30,
+      [True] * 30,
+      [frame % 2 == 0 for frame in range(30)],
+    )
+    for lat_active_pattern in patterns:
+      with self.subTest(lat_active_pattern=lat_active_pattern):
+        self.setUp()
+        sent = []
+        for lat_active in lat_active_pattern:
+          sent.extend(self._run(1, 20., lat_active=lat_active))
+        commands = self._lkas(sent)
+        self.assertEqual(len(commands), len(lat_active_pattern))
+        counters = [dat[2] & 0xf for dat in commands]
+        self.assertEqual(counters, [counter % 16 for counter in range(len(commands))])
 
+  def test_counter_resyncs_from_the_forwarded_stock_frame(self):
+    forwarded_nanos = 100_000_000
+    for elapsed_nanos, expected in ((0, 15), (5_000_000, 15), (12_000_000, 0), (25_000_000, 1)):
+      with self.subTest(elapsed_nanos=elapsed_nanos):
+        self.setUp()
+        self.update(DRIVING | {"LKAS_COMMAND": STOCK_LKAS_C14}, nanos=forwarded_nanos)
+        self.CI.CS.out.vEgo = 20.
+        CC = structs.CarControl()
+        _, can_sends = self.CI.apply(CC.as_reader(), forwarded_nanos + elapsed_nanos)
+        self.assertEqual(self._lkas([can_sends])[0][2] & 0xf, expected)
+
+    # Once openpilot is running, the retained forwarded timestamp is stale and cannot resync it.
     self.setUp()
-    active = self._run(50, 20., lat_active=True, torque=1.0)
-    self.assertEqual(len(self._lkas(active)), 50)                 # one 0x1f6 per 100 Hz frame
+    self.update(DRIVING | {"LKAS_COMMAND": STOCK_LKAS_C14}, nanos=forwarded_nanos)
+    self.CI.CS.out.vEgo = 20.
+    CC = structs.CarControl().as_reader()
+    counters = []
+    for now_nanos in (forwarded_nanos, forwarded_nanos + 10_000_000, forwarded_nanos + 20_000_000):
+      _, can_sends = self.CI.apply(CC, now_nanos)
+      counters.append(self._lkas([can_sends])[0][2] & 0xf)
+    self.assertEqual(counters, [15, 0, 1])
 
-  def test_counter_continues_the_stock_sequence(self):
-    # the camera keeps sending 0x1F6 while the panda blocks it, so the first openpilot frame after the
-    # hand-over resumes the counter the EPS last saw rather than restarting an independent sequence
-    sent = self._run(20, 20., cam={"LKAS_COMMAND": STOCK_LKAS_C14})
-    counters = [dat[2] & 0xf for dat in self._lkas(sent)]         # LKAS_COMMAND.COUNTER, 19|4
-    self.assertEqual(counters, [(15 + i) % 16 for i in range(20)])
+    # A copy newer than the previous openpilot transmission is a real hand-over and resyncs again.
+    self.update({"LKAS_COMMAND": STOCK_LKAS_C14}, nanos=forwarded_nanos + 25_000_000)
+    _, can_sends = self.CI.apply(CC, forwarded_nanos + 30_000_000)
+    self.assertEqual(self._lkas([can_sends])[0][2] & 0xf, 15)
 
-    # going inactive and coming back resynchronises again instead of continuing from 15+20
-    self._run(20, 20., lat_active=False, cam={"LKAS_COMMAND": STOCK_LKAS_C14})
-    resumed = self._lkas(self._run(4, 20., cam={"LKAS_COMMAND": STOCK_LKAS_C14}))
-    self.assertEqual([dat[2] & 0xf for dat in resumed], [15, 0, 1, 2])
+  def test_idle_control_bit_mirrors_camera(self):
+    for camera_frame, expected in (("80100a57", True), (STOCK_LKAS_C14, False)):
+      for v_ego in (0., 30.):
+        with self.subTest(camera_frame=camera_frame, v_ego=v_ego):
+          self.setUp()
+          bits = self._control_bits(self._run(1, v_ego, lat_active=False,
+                                               cam={"LKAS_COMMAND": camera_frame}))
+          self.assertEqual(bits, [expected])
+
+    # While active, the wire follows openpilot's speed-band state regardless of the camera's bit.
+    self.setUp()
+    bits = self._control_bits(self._run(300, self.CP.minSteerSpeed + 1., lat_active=True,
+                                         cam={"LKAS_COMMAND": STOCK_LKAS_C14}))
+    self.assertTrue(bits[-1])
+    bits = self._control_bits(self._run(1, self.CP.minSteerSpeed - 1.2, lat_active=True,
+                                         cam={"LKAS_COMMAND": "80100a57"}))
+    self.assertEqual(bits, [False])
 
   def test_heartbeat_is_sent_when_inactive(self):
     # the gateway opt-in does not depend on openpilot being engaged
@@ -714,29 +757,29 @@ class TestSuswCarController(SuswTestBase):
 
   def test_control_bit_below_min_steer_speed(self):
     # the control bit never comes on below the stock LaneSense drop-out speed, however long we drive
-    self.assertFalse(any(self._control_bits(self._run(400, self.CP.minSteerSpeed - 1.5))))
+    self.assertFalse(any(self._control_bits(self._run(400, self.CP.minSteerSpeed - 1.5, lat_active=True))))
 
     # ...and it does come on above minSteerSpeed, once the re-enable guard has expired
-    self.assertTrue(self._control_bits(self._run(400, self.CP.minSteerSpeed + 1.0))[-1])
+    self.assertTrue(self._control_bits(self._run(400, self.CP.minSteerSpeed + 1.0, lat_active=True))[-1])
 
   def test_min_steer_speed_hysteresis(self):
     # minSteerSpeed is the stock drop-out (14.9 m/s); the control bit keeps the stock 1.1 m/s band
     # below it and falls at 13.8 m/s. Probe either side of 13.8, not either side of some wider band,
     # so that a wrong hysteresis value cannot pass.
     self.assertAlmostEqual(self.CP.minSteerSpeed, 14.9, places=5)
-    self._run(300, self.CP.minSteerSpeed + 1.0)
-    self.assertTrue(all(self._control_bits(self._run(50, 13.9))))
-    self.assertFalse(any(self._control_bits(self._run(50, 13.7))))
+    self._run(300, self.CP.minSteerSpeed + 1.0, lat_active=True)
+    self.assertTrue(all(self._control_bits(self._run(50, 13.9, lat_active=True))))
+    self.assertFalse(any(self._control_bits(self._run(50, 13.7, lat_active=True))))
 
   def test_reenable_guard(self):
     # EPS faults if LKAS re-enables too quickly, so the control bit is held off for 200 frames
-    bits = self._control_bits(self._run(300, self.CP.minSteerSpeed + 1.0))
+    bits = self._control_bits(self._run(300, self.CP.minSteerSpeed + 1.0, lat_active=True))
     self.assertFalse(any(bits[:201]))
     self.assertTrue(all(bits[201:]))
 
     # a single frame below the minimum steering speed restarts the 200 frame guard
-    self.assertFalse(self._control_bits(self._run(1, self.CP.minSteerSpeed - 3.0))[0])
-    bits = self._control_bits(self._run(250, self.CP.minSteerSpeed + 1.0))
+    self.assertFalse(self._control_bits(self._run(1, self.CP.minSteerSpeed - 3.0, lat_active=True))[0])
+    bits = self._control_bits(self._run(250, self.CP.minSteerSpeed + 1.0, lat_active=True))
     self.assertFalse(any(bits[:200]))
     self.assertTrue(all(bits[200:]))
 
@@ -758,8 +801,12 @@ class TestSuswHandover(SuswTestBase):
     self.safety.init_tests()
     self.safety_packer = CANPackerSafety("chrysler_susw")
     self.t_us = 0
+    self.op_counter_prev = None
+    self.accepted_op_counters = []
 
-  def _step(self, *, acc_engaged: bool, lanesense_on: bool, lat_active: bool, v_ego: float) -> int:
+  def _step(self, *, acc_engaged: bool, lanesense_on: bool, lat_active: bool, v_ego: float,
+            torque: float = 0., force_controls_allowed: bool | None = None,
+            expect_accepted: bool = True, check_counter_continuity: bool = True) -> int:
     self.safety.set_timer(self.t_us)
 
     # Pack one physical copy of every safety-checked message, then feed those same bytes to both
@@ -787,13 +834,16 @@ class TestSuswHandover(SuswTestBase):
       "CRUISE_BUTTONS": packed["CRUISE_BUTTONS"],
     }
     CS = self.update(pt, adas, {"LKA_HUD_2": packed["LKA_HUD_2"]})
-    self.assertEqual(acc_engaged and lanesense_on, self.safety.get_controls_allowed())
+    if force_controls_allowed is not None:
+      self.safety.set_controls_allowed(force_controls_allowed)
+    expected_controls = acc_engaged and lanesense_on if force_controls_allowed is None else force_controls_allowed
+    self.assertEqual(expected_controls, self.safety.get_controls_allowed())
     self.assertEqual(acc_engaged and lanesense_on, CS.cruiseState.enabled)
 
     CC = structs.CarControl()
     CC.enabled = CS.cruiseState.enabled
     CC.latActive = lat_active
-    CC.actuators.torque = 0.
+    CC.actuators.torque = torque
 
     _, can_sends = self.CI.apply(CC.as_reader(), self.nanos)
     accepted_op = 0
@@ -802,8 +852,13 @@ class TestSuswHandover(SuswTestBase):
         accepted = self.safety.safety_tx_hook(make_msg(bus, addr, len(dat), dat))
         if (addr == 0x1f6) and accepted:
           accepted_op += 1
+          counter = dat[2] & 0xf
+          if check_counter_continuity and self.op_counter_prev is not None:
+            self.assertEqual(counter, (self.op_counter_prev + 1) % 16)
+          self.op_counter_prev = counter
+          self.accepted_op_counters.append(counter)
 
-    self.assertLessEqual(accepted_op, 1)
+    self.assertEqual(accepted_op, int(expect_accepted))
     stock_forwarded = self.safety.safety_fwd_hook(2, 0x1f6) == 0
     self.t_us += 10000
     return accepted_op + int(stock_forwarded)
@@ -811,44 +866,66 @@ class TestSuswHandover(SuswTestBase):
   def _phase(self, frames: int = 30, **kwargs) -> list[int]:
     return [self._step(**kwargs) for _ in range(frames)]
 
-  def test_acc_handover_has_one_sender(self):
+  def test_acc_changes_have_one_sender(self):
     off_before = self._phase(acc_engaged=False, lanesense_on=True, lat_active=False, v_ego=20.)
     on = self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
     off_after = self._phase(acc_engaged=False, lanesense_on=True, lat_active=False, v_ego=20.)
     self.assertEqual(off_before + on + off_after, [1] * 90)
 
-  def test_lanesense_handover_has_one_sender(self):
+  def test_lanesense_changes_have_one_sender(self):
     off_before = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
     on = self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
     off_after = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
     self.assertEqual(off_before + on + off_after, [1] * 90)
 
-  def test_lat_active_handover_gap_is_bounded_by_the_timeout(self):
+  def test_lat_active_changes_have_one_sender(self):
     inactive_before = self._phase(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
     active = self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
     inactive_after = self._phase(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
+    self.assertEqual(inactive_before + active + inactive_after, [1] * 90)
 
-    # exactly one sender while inactive (the defect this closes: stock used to be blocked here) and
-    # while active, including the hand-over frame itself
-    self.assertEqual(inactive_before + active, [1] * 60)
-    # Hand-back is the accepted residual of the accepted-stream gate: openpilot goes silent at once
-    # and stock stays blocked until its last accepted command is CHRYSLER_SUSW_LKAS_TX_TIMEOUT old,
-    # so the EPS sees a gap of at most timeout - 1 frame (4 x 10 ms at the provisional 50 ms) and
-    # never two senders. The final bound comes from the parked-EPS gap measurement (AH-148).
-    self.assertEqual(inactive_after[:4], [0] * 4)
-    self.assertEqual(inactive_after[4:], [1] * 26)
+  def test_alternating_lat_active_has_one_sender(self):
+    senders = [self._step(acc_engaged=True, lanesense_on=True, lat_active=bool(frame % 2), v_ego=20.)
+               for frame in range(30)]
+    self.assertEqual(senders, [1] * 30)
 
-  def test_min_steer_speed_handover_gap_is_bounded_by_the_timeout(self):
+  def test_min_steer_speed_changes_have_one_sender(self):
     phases = []
     for v_ego in (14., 17., 14.):
       phases.append(self._phase(acc_engaged=True, lanesense_on=True,
                                 lat_active=v_ego >= self.CP.minSteerSpeed, v_ego=v_ego))
+    self.assertEqual(sum(phases, []), [1] * 90)
 
-    # below minSteerSpeed stock steers (one sender, no gap); crossing up hands over cleanly; crossing
-    # back down leaves the same bounded hand-back gap as test_lat_active_handover_gap_is_bounded_by_the_timeout
-    self.assertEqual(phases[0] + phases[1], [1] * 60)
-    self.assertEqual(phases[2][:4], [0] * 4)
-    self.assertEqual(phases[2][4:], [1] * 26)
+  def test_boot_handover_resyncs_counter(self):
+    self.safety.set_timer(0)
+    self.assertEqual(self.safety.safety_fwd_hook(2, 0x1f6), 0)
+    self.update({"LKAS_COMMAND": STOCK_LKAS_C14})
+
+    sender = self._step(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
+    self.assertEqual(sender, 1)
+    # One 10 ms camera period elapsed after the forwarded counter 14, then openpilot adds one.
+    self.assertEqual(self.accepted_op_counters, [0])
+
+  def test_refusal_hands_back_then_resyncs_without_duplicate(self):
+    # Prime the controller through the 200-frame control-bit guard, still with a torque-zero stream.
+    self.assertEqual(self._phase(210, acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.),
+                     [1] * 210)
+
+    self.safety.set_controls_allowed(False)
+    hand_back = [self._step(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20., torque=1.,
+                            force_controls_allowed=False, expect_accepted=False,
+                            check_counter_continuity=False) for _ in range(5)]
+    self.assertEqual(hand_back, [0, 0, 0, 0, 1])
+
+    # Feed the stock frame after the timeout hand-back, newer than the last refused transmission.
+    # Ten milliseconds later the idle stream extrapolates counter 14 to 0 and blocks stock again.
+    self.update({"LKAS_COMMAND": STOCK_LKAS_C14}, nanos=self.nanos + 1_000_000)
+    sender = self._step(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.,
+                        force_controls_allowed=False, check_counter_continuity=False)
+    self.assertEqual(sender, 1)
+    self.assertEqual(self.accepted_op_counters[-1], 0)
+    self.assertNotEqual(self.accepted_op_counters[-1], 14)
+    self.assertEqual(self.safety.safety_fwd_hook(2, 0x1f6), -1)
 
 
 class TestSuswDbc(unittest.TestCase):

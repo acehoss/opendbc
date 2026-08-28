@@ -56,9 +56,8 @@ def create_lkas_hud(packer, CP, lkas_active, hud_alert, hud_count, car_model, au
 
 def create_lkas_command(packer, CP, apply_torque, lkas_control_bit, counter=None):
   # LKAS_COMMAND Lane-keeping signal to turn the wheel
-  # counter: SUSW only. openpilot shares this address with the stock camera there (the panda forwards
-  # the camera's frame while openpilot is inactive), so the caller drives the counter to keep one
-  # continuous sequence at the EPS. Left None everywhere else, where CANPacker free-runs it.
+  # counter: SUSW only. Its single arbiter resyncs from the last stock frame that reached the EPS,
+  # then free-runs one continuous sequence. Left None elsewhere, where CANPacker free-runs it.
   enabled_val = 2 if CP.carFingerprint in RAM_CARS else 1
   values = {
     "STEERING_TORQUE": apply_torque,

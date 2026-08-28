@@ -10,16 +10,18 @@
 //          nothing is ever forwarded to or from this bus
 //   bus 2: CAN CH, camera side
 //
-// Lateral control only, on top of the stock ACC: the only message openpilot sends is
+// Lateral control only, on top of the stock ACC: the only vehicle message openpilot sends is
 // LKAS_COMMAND, and engagement follows ACC_STATUS_1.ACC_ENGAGED off the gateway bus ANDed with
-// LKA_HUD_2.LANESENSE_DISABLED off the camera bus (G3: openpilot is only ever active with the
-// stock ACC engaged and LaneSense switched on). The stock camera's own LKAS_COMMAND is forwarded
-// to the EPS whenever controls are not allowed or openpilot's accepted LKAS_COMMAND stream has
-// expired, so stock LaneSense keeps working when openpilot is off. It is blocked only while both
-// controls are allowed and the accepted openpilot stream is live, so the two can never fight.
+// LKA_HUD_2.LANESENSE_DISABLED off the camera bus. openpilot is the single LKAS_COMMAND arbiter:
+// after its first accepted frame, the stock camera stays blocked while the accepted openpilot
+// stream is live. Stock is forwarded only before that first frame or after the stream is silent
+// for the timeout because openpilot is dead, hung, or refused. With controls disallowed, the
+// lateral checks accept only torque-zero commands, so the idle stream cannot actuate. Its failure
+// mode is no LKAS assist from either source, not unexpected actuation.
 
-// Provisional: 5 frames at 100 Hz. The final value comes from the M4 parked-EPS measurement of how
-// long a 0x1F6 gap the EPS tolerates (AH-148).
+// Provisional: 5 frames at 100 Hz. This is the hole the EPS sees when openpilot goes silent or is
+// refused before stock is forwarded again. The final value comes from the M4 parked-EPS measurement
+// of how long a 0x1F6 gap the EPS tolerates (AH-148).
 #define CHRYSLER_SUSW_LKAS_TX_TIMEOUT 50000U
 
 // LKA_HUD_2.LANESENSE_DISABLED, latched from bus 2. Fail closed: openpilot may not steer until the
@@ -164,14 +166,14 @@ static bool chrysler_susw_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 
   if ((bus_num == 2) && (addr == 0x1F6)) {
-    // Block the stock camera only while controls are allowed and openpilot has a recently accepted
-    // LKAS_COMMAND. A refused command cannot suppress the stock stream.
+    // openpilot owns LKAS_COMMAND while its accepted stream is live. A refused command cannot
+    // refresh ownership; stock returns after the last accepted frame reaches the timeout.
     bool op_stream_live = false;
     if (chrysler_susw_lkas_tx_seen) {
       const uint32_t ts_elapsed = safety_get_ts_elapsed(microsecond_timer_get(), chrysler_susw_lkas_tx_ts);
       op_stream_live = ts_elapsed < CHRYSLER_SUSW_LKAS_TX_TIMEOUT;
     }
-    block_msg = controls_allowed && op_stream_live;
+    block_msg = op_stream_live;
   }
 
   return block_msg;
