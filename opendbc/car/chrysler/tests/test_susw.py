@@ -614,7 +614,7 @@ class TestSuswLkasCommand(unittest.TestCase):
 
 class TestSuswCarController(SuswTestBase):
   def _run(self, frames: int, v_ego: float, lat_active: bool = True, cancel: bool = False, resume: bool = False,
-           torque: float = 0.5, cam: dict | None = None):
+           torque: float = 0.5, cam: dict | None = None, pt: dict | None = None, adas: dict | None = None):
     CC = structs.CarControl()
     CC.enabled = True
     CC.latActive = lat_active
@@ -623,7 +623,11 @@ class TestSuswCarController(SuswTestBase):
     CC.actuators.torque = torque
     CC = CC.as_reader()
 
-    self.update(DRIVING, {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}, cam)
+    # LaneSense on by default: the disengage fast path zeroes torque when cruiseState.enabled is
+    # false, so an engaged controller run needs the full engagement state a real drive would have
+    self.update(DRIVING | (pt or {}),
+                {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE} | (adas or {}),
+                {"LKA_HUD_2": LANESENSE_ON_GREEN} | (cam or {}))
 
     sent = []
     for _ in range(frames):
@@ -724,6 +728,25 @@ class TestSuswCarController(SuswTestBase):
                                          cam={"LKAS_COMMAND": "80100a57"}))
     self.assertEqual(bits, [False])
 
+  def test_disengage_fast_path_zeros_torque(self):
+    # The panda drops controls_allowed on the same CAN frame CarState is parsed from, before
+    # latActive reflects the disengage; a non-zero command in that window is refused and burns a
+    # counter at the EPS (route 00000133 t=2622.8). The controller must therefore zero torque from
+    # the disengage conditions in the current frame, while latActive is still true.
+    self._run(300, 20.)                                            # arm the control bit
+    cases = (
+      ({"pt": {"ABS_3": BRAKE_PRESSED}}, "brake pressed"),
+      ({"adas": {"ACC_STATUS_1": ACC_OFF}}, "ACC dropped"),
+      ({"cam": {"LKA_HUD_2": LANESENSE_OFF}}, "LaneSense off"),
+    )
+    for kwargs, label in cases:
+      with self.subTest(label):
+        torques = [(dat[0] << 3 | dat[1] >> 5) - 1024 for dat in self._lkas(self._run(5, 20., torque=1.0, **kwargs))]
+        self.assertEqual(torques, [0] * 5, label)
+    # and the frame is still transmitted every 10 ms with a continuous counter
+    sent = self._lkas(self._run(5, 20., torque=1.0, pt={"ABS_3": BRAKE_PRESSED}))
+    self.assertEqual(len(sent), 5)
+
   def test_heartbeat_is_sent_when_inactive(self):
     # the gateway opt-in does not depend on openpilot being engaged
     sent = self._run(30, 20., lat_active=False)
@@ -805,7 +828,7 @@ class TestSuswHandover(SuswTestBase):
     self.accepted_op_counters = []
 
   def _step(self, *, acc_engaged: bool, lanesense_on: bool, lat_active: bool, v_ego: float,
-            torque: float = 0., force_controls_allowed: bool | None = None,
+            torque: float = 0., brake: bool = False, force_controls_allowed: bool | None = None,
             expect_accepted: bool = True, check_counter_continuity: bool = True) -> int:
     self.safety.set_timer(self.t_us)
 
@@ -813,7 +836,7 @@ class TestSuswHandover(SuswTestBase):
     # layers. LaneSense goes first so its state is current when the 100 Hz ACC frame evaluates G3.
     rx_values = (
       ("LKA_HUD_2", 2, {"LANESENSE_DISABLED": int(not lanesense_on)}),
-      ("ABS_3", 0, {"BRAKE_PEDAL_SWITCH": 0}),
+      ("ABS_3", 0, {"BRAKE_PEDAL_SWITCH": int(brake)}),
       ("ABS_6", 0, {"VEHICLE_SPEED": v_ego}),
       ("EPS_2", 0, {"DRIVER_TORQUE": 0}),
       ("ACCEL_PEDAL_DRIVER", 0, {"ACCEL_PEDAL_DRIVER": 0}),
@@ -836,7 +859,7 @@ class TestSuswHandover(SuswTestBase):
     CS = self.update(pt, adas, {"LKA_HUD_2": packed["LKA_HUD_2"]})
     if force_controls_allowed is not None:
       self.safety.set_controls_allowed(force_controls_allowed)
-    expected_controls = acc_engaged and lanesense_on if force_controls_allowed is None else force_controls_allowed
+    expected_controls = (acc_engaged and lanesense_on and not brake) if force_controls_allowed is None else force_controls_allowed
     self.assertEqual(expected_controls, self.safety.get_controls_allowed())
     self.assertEqual(acc_engaged and lanesense_on, CS.cruiseState.enabled)
 
@@ -905,6 +928,18 @@ class TestSuswHandover(SuswTestBase):
     self.assertEqual(sender, 1)
     # One 10 ms camera period elapsed after the forwarded counter 14, then openpilot adds one.
     self.assertEqual(self.accepted_op_counters, [0])
+
+  def test_brake_disengage_at_max_torque_has_no_refusal(self):
+    # Route 00000133 t=2622.8: brake press while saturated at the cap; the panda dropped controls
+    # on the brake frame and refused the two in-flight non-zero commands - a 29 ms hole and a
+    # counter skip of 3 that faulted the EPS. With the fast path the controller zeroes torque from
+    # the same frame, so every frame stays accepted: one sender, counter +1, even while latActive
+    # is still true (the Python disengage lag).
+    self.assertEqual(self._phase(210, acc_engaged=True, lanesense_on=True, lat_active=True,
+                                 v_ego=20., torque=1.), [1] * 210)
+    senders = [self._step(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.,
+                          torque=1., brake=True) for _ in range(10)]
+    self.assertEqual(senders, [1] * 10)
 
   def test_refusal_hands_back_then_resyncs_without_duplicate(self):
     # Prime the controller through the 200-frame control-bit guard, still with a torque-zero stream.
