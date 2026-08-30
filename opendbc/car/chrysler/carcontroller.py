@@ -101,6 +101,14 @@ class CarController(CarControllerBase):
         apply_torque = apply_meas_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorqueEps, self.params)
       if not lkas_active or not lkas_control_bit:
         apply_torque = 0
+      if susw and (CS.out.brakePressed or not CS.out.cruiseState.enabled):
+        # Fast path for the enabled-lag refusal window (route 00000133 t=2622.8, AH-173): the panda
+        # drops controls_allowed on the same CAN frame this CarState was parsed from, one to two
+        # 10 ms frames before latActive reflects the disengage, and a non-zero command in that
+        # window is refused (lateral.h) - a hole plus a counter skip at the EPS. Zeroing from the
+        # panda's own disengage inputs (brake; ACC or LaneSense off via cruiseState.enabled) bounds
+        # the damage to at most one in-flight frame.
+        apply_torque = 0
       self.apply_torque_last = apply_torque
 
       if susw:
