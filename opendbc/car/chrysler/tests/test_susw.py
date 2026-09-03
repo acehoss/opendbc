@@ -661,10 +661,13 @@ class TestSuswCarController(SuswTestBase):
     self.assertTrue(all(dat[1] & 0x10 for dat in active))          # still armed
     self.assertNotEqual(max((dat[0] << 3 | dat[1] >> 5) - 1024 for dat in active), 0)
 
-    # The idle stream stays present but can never actuate, even with a stale full-scale request.
+    # The idle stream stays present but can never actuate, even with a stale full-scale request:
+    # the torque already on the wire is released at 60 counts/frame, then stays at zero.
     inactive = self._lkas(self._run(50, 20., lat_active=False, torque=1.0))
     self.assertEqual(len(inactive), 50)
-    self.assertTrue(all((dat[0] << 3 | dat[1] >> 5) - 1024 == 0 for dat in inactive))
+    torques = [(dat[0] << 3 | dat[1] >> 5) - 1024 for dat in inactive]
+    self.assertTrue(all(torques[i] == max(torques[i - 1] - 60, 0) for i in range(1, 8)))
+    self.assertTrue(all(t == 0 for t in torques[7:]))
 
   def test_lkas_tx_is_continuous(self):
     patterns = (
@@ -721,31 +724,41 @@ class TestSuswCarController(SuswTestBase):
 
     # While active, the wire follows openpilot's speed-band state regardless of the camera's bit.
     self.setUp()
-    bits = self._control_bits(self._run(300, self.CP.minSteerSpeed + 1., lat_active=True,
+    bits = self._control_bits(self._run(300, self.CP.minSteerSpeed + 1., lat_active=True, torque=0.,
                                          cam={"LKAS_COMMAND": STOCK_LKAS_C14}))
     self.assertTrue(bits[-1])
-    bits = self._control_bits(self._run(1, self.CP.minSteerSpeed - 1.2, lat_active=True,
+    bits = self._control_bits(self._run(1, self.CP.minSteerSpeed - 1.2, lat_active=True, torque=0.,
                                          cam={"LKAS_COMMAND": "80100a57"}))
     self.assertEqual(bits, [False])
 
-  def test_disengage_fast_path_zeros_torque(self):
+  def test_disengage_releases_torque_from_the_current_frame(self):
     # The panda drops controls_allowed on the same CAN frame CarState is parsed from, before
-    # latActive reflects the disengage; a non-zero command in that window is refused and burns a
-    # counter at the EPS (route 00000133 t=2622.8). The controller must therefore zero torque from
-    # the disengage conditions in the current frame, while latActive is still true.
-    self._run(300, 20.)                                            # arm the control bit
+    # latActive reflects the disengage (route 00000133 t=2622.8), so the release starts from the
+    # disengage conditions in the current frame while latActive is still true. And it is a release,
+    # not a cut: the EPS faults on a torque cliff (route 00000149 t=1331.9, -279 -> 0 in one frame).
     cases = (
       ({"pt": {"ABS_3": BRAKE_PRESSED}}, "brake pressed"),
       ({"adas": {"ACC_STATUS_1": ACC_OFF}}, "ACC dropped"),
       ({"cam": {"LKA_HUD_2": LANESENSE_OFF}}, "LaneSense off"),
+      ({"lat_active": False}, "latActive dropped"),
     )
     for kwargs, label in cases:
       with self.subTest(label):
-        torques = [(dat[0] << 3 | dat[1] >> 5) - 1024 for dat in self._lkas(self._run(5, 20., torque=1.0, **kwargs))]
-        self.assertEqual(torques, [0] * 5, label)
-    # and the frame is still transmitted every 10 ms with a continuous counter
-    sent = self._lkas(self._run(5, 20., torque=1.0, pt={"ABS_3": BRAKE_PRESSED}))
-    self.assertEqual(len(sent), 5)
+        self.setUp()
+        self._run(400, 20., torque=1.0)                              # arm and ramp to the 383 cap
+        sent = self._lkas(self._run(9, 20., torque=1.0, **kwargs))
+        torques = [(dat[0] << 3 | dat[1] >> 5) - 1024 for dat in sent]
+        self.assertEqual(torques, [323, 263, 203, 143, 83, 23, 0, 0, 0], label)
+        # the control bit is held while torque is still on the wire; afterwards it is openpilot's own
+        # armed bit while latActive is still true, and the (absent) camera bit once it is not
+        expected_bits = [True] * 9 if kwargs.get("lat_active", True) else [True] * 6 + [False] * 3
+        self.assertEqual([bool(dat[1] & 0x10) for dat in sent], expected_bits, label)
+
+    # negative torque releases the same way
+    self.setUp()
+    self._run(400, 20., torque=-1.0)
+    torques = [(dat[0] << 3 | dat[1] >> 5) - 1024 for dat in self._lkas(self._run(8, 20., torque=-1.0, lat_active=False))]
+    self.assertEqual(torques, [-323, -263, -203, -143, -83, -23, 0, 0])
 
   def test_heartbeat_is_sent_when_inactive(self):
     # the gateway opt-in does not depend on openpilot being engaged
@@ -790,19 +803,20 @@ class TestSuswCarController(SuswTestBase):
     # below it and falls at 13.8 m/s. Probe either side of 13.8, not either side of some wider band,
     # so that a wrong hysteresis value cannot pass.
     self.assertAlmostEqual(self.CP.minSteerSpeed, 14.9, places=5)
-    self._run(300, self.CP.minSteerSpeed + 1.0, lat_active=True)
-    self.assertTrue(all(self._control_bits(self._run(50, 13.9, lat_active=True))))
-    self.assertFalse(any(self._control_bits(self._run(50, 13.7, lat_active=True))))
+    # torque 0 throughout: with torque on the wire the bit is held through the release ramp
+    self._run(300, self.CP.minSteerSpeed + 1.0, lat_active=True, torque=0.)
+    self.assertTrue(all(self._control_bits(self._run(50, 13.9, lat_active=True, torque=0.))))
+    self.assertFalse(any(self._control_bits(self._run(50, 13.7, lat_active=True, torque=0.))))
 
   def test_reenable_guard(self):
     # EPS faults if LKAS re-enables too quickly, so the control bit is held off for 200 frames
-    bits = self._control_bits(self._run(300, self.CP.minSteerSpeed + 1.0, lat_active=True))
+    bits = self._control_bits(self._run(300, self.CP.minSteerSpeed + 1.0, lat_active=True, torque=0.))
     self.assertFalse(any(bits[:201]))
     self.assertTrue(all(bits[201:]))
 
     # a single frame below the minimum steering speed restarts the 200 frame guard
-    self.assertFalse(self._control_bits(self._run(1, self.CP.minSteerSpeed - 3.0, lat_active=True))[0])
-    bits = self._control_bits(self._run(250, self.CP.minSteerSpeed + 1.0, lat_active=True))
+    self.assertFalse(self._control_bits(self._run(1, self.CP.minSteerSpeed - 3.0, lat_active=True, torque=0.))[0])
+    bits = self._control_bits(self._run(250, self.CP.minSteerSpeed + 1.0, lat_active=True, torque=0.))
     self.assertFalse(any(bits[:200]))
     self.assertTrue(all(bits[200:]))
 
@@ -826,6 +840,7 @@ class TestSuswHandover(SuswTestBase):
     self.t_us = 0
     self.op_counter_prev = None
     self.accepted_op_counters = []
+    self.accepted_op_torques = []
 
   def _step(self, *, acc_engaged: bool, lanesense_on: bool, lat_active: bool, v_ego: float,
             torque: float = 0., brake: bool = False, force_controls_allowed: bool | None = None,
@@ -880,6 +895,7 @@ class TestSuswHandover(SuswTestBase):
             self.assertEqual(counter, (self.op_counter_prev + 1) % 16)
           self.op_counter_prev = counter
           self.accepted_op_counters.append(counter)
+          self.accepted_op_torques.append((dat[0] << 3 | dat[1] >> 5) - 1024)
 
     self.assertEqual(accepted_op, int(expect_accepted))
     stock_forwarded = self.safety.safety_fwd_hook(2, 0x1f6) == 0
@@ -929,17 +945,22 @@ class TestSuswHandover(SuswTestBase):
     # One 10 ms camera period elapsed after the forwarded counter 14, then openpilot adds one.
     self.assertEqual(self.accepted_op_counters, [0])
 
-  def test_brake_disengage_at_max_torque_has_no_refusal(self):
+  def test_brake_disengage_at_max_torque_is_a_release(self):
     # Route 00000133 t=2622.8: brake press while saturated at the cap; the panda dropped controls
-    # on the brake frame and refused the two in-flight non-zero commands - a 29 ms hole and a
-    # counter skip of 3 that faulted the EPS. With the fast path the controller zeroes torque from
-    # the same frame, so every frame stays accepted: one sender, counter +1, even while latActive
-    # is still true (the Python disengage lag).
-    self.assertEqual(self._phase(210, acc_engaged=True, lanesense_on=True, lat_active=True,
-                                 v_ego=20., torque=1.), [1] * 210)
+    # on the brake frame and refused the two in-flight full-torque commands - a 29 ms hole and a
+    # counter skip of 3 that faulted the EPS. Route 00000149 t=1331.9: same disengage with the cut
+    # fixed, -279 -> 0 in one clean frame, and the EPS faulted on the cliff. Now the controller
+    # releases at 60 counts/frame from the brake frame on (latActive still true - the Python lag),
+    # the panda accepts the release with controls disallowed, and the wire shows one sender, a
+    # continuous counter and a 7-frame ramp to zero.
+    # 200 frames of re-enable guard, then 5 counts/frame up to the cap
+    self.assertEqual(self._phase(300, acc_engaged=True, lanesense_on=True, lat_active=True,
+                                 v_ego=20., torque=1.), [1] * 300)
+    self.assertEqual(self.accepted_op_torques[-1], 383)
     senders = [self._step(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.,
                           torque=1., brake=True) for _ in range(10)]
     self.assertEqual(senders, [1] * 10)
+    self.assertEqual(self.accepted_op_torques[-10:], [323, 263, 203, 143, 83, 23, 0, 0, 0, 0])
 
   def test_refusal_hands_back_then_resyncs_without_duplicate(self):
     # Prime the controller through the 200-frame control-bit guard, still with a torque-zero stream.

@@ -5,6 +5,13 @@ from opendbc.car.chrysler import chryslercan
 from opendbc.car.chrysler.values import CUSW_CARS, RAM_CARS, SUSW_CARS, CarControllerParams, ChryslerFlags
 from opendbc.car.interfaces import CarControllerBase
 
+# SUSW torque release at disengage, counts per 10 ms frame. The EPS faults on a torque cliff (every
+# survived disengage cut <= 205 counts in one frame, both faults cut >= 279), and the stock camera
+# never moves more than 6 per frame. 60 releases the 383 cap in 7 frames (70 ms) and stays under
+# the proven-tolerated cliff; the panda accepts the release for at most 10 frames after controls
+# drop (chrysler_susw.h, CHRYSLER_SUSW_RELEASE_*).
+SUSW_RELEASE_RATE = 60
+
 
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
@@ -99,15 +106,20 @@ class CarController(CarControllerBase):
         apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.params)
       else:
         apply_torque = apply_meas_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorqueEps, self.params)
-      if not lkas_active or not lkas_control_bit:
-        apply_torque = 0
-      if susw and (CS.out.brakePressed or not CS.out.cruiseState.enabled):
-        # Fast path for the enabled-lag refusal window (route 00000133 t=2622.8, AH-173): the panda
-        # drops controls_allowed on the same CAN frame this CarState was parsed from, one to two
-        # 10 ms frames before latActive reflects the disengage, and a non-zero command in that
-        # window is refused (lateral.h) - a hole plus a counter skip at the EPS. Zeroing from the
-        # panda's own disengage inputs (brake; ACC or LaneSense off via cruiseState.enabled) bounds
-        # the damage to at most one in-flight frame.
+      if susw:
+        # Release instead of cut. Two disengage inputs are read straight from this CarState frame
+        # (brake; ACC or LaneSense off via cruiseState.enabled) because the panda drops
+        # controls_allowed on that same CAN frame, one to two 10 ms frames before latActive reflects
+        # it, and a full-torque command in that window is refused - a hole plus a counter skip at the
+        # EPS (route 00000133 t=2622.8). And the release is a ramp, not a zero: the EPS faults on a
+        # torque cliff (route 00000149 t=1331.9, -279 -> 0 in one frame with nothing else wrong).
+        disengaged = CS.out.brakePressed or not CS.out.cruiseState.enabled
+        if disengaged or not lkas_active or not lkas_control_bit:
+          if self.apply_torque_last > 0:
+            apply_torque = max(self.apply_torque_last - SUSW_RELEASE_RATE, 0)
+          else:
+            apply_torque = min(self.apply_torque_last + SUSW_RELEASE_RATE, 0)
+      elif not lkas_active or not lkas_control_bit:
         apply_torque = 0
       self.apply_torque_last = apply_torque
 
@@ -119,7 +131,12 @@ class CarController(CarControllerBase):
         if CS.lkas_fwd_nanos > self.lkas_tx_nanos:
           elapsed_frames = (now_nanos - CS.lkas_fwd_nanos) // 10_000_000
           self.lkas_counter = (CS.lkas_fwd_counter + elapsed_frames + 1) % 0x10
-        tx_control_bit = lkas_control_bit if CC.latActive else CS.lkas_cam_control_bit
+        # the control bit stays set while torque is still being released (the EPS, and the panda's
+        # steer_req rule, both want torque only with the bit set); idle frames mirror the camera
+        if apply_torque != 0:
+          tx_control_bit = True
+        else:
+          tx_control_bit = lkas_control_bit if CC.latActive else CS.lkas_cam_control_bit
         can_sends.append(chryslercan.create_lkas_command(self.packer, self.CP, int(apply_torque),
                                                          tx_control_bit, counter=self.lkas_counter))
         self.lkas_counter = (self.lkas_counter + 1) % 0x10
