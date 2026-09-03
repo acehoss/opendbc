@@ -122,6 +122,107 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x547))
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x547))
 
+  def _release_from(self, torque):
+    # get an accepted non-zero command on the wire while controls are allowed, then drop controls
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(True)
+    self._reset_torque_driver_measurement(0)
+    self._set_prev_torque(torque)
+    self.assertTrue(self._tx(self._torque_cmd_msg(torque)))
+    self.safety.set_controls_allowed(False)
+
+  def test_steer_safety_check(self):
+    # Departure from the upstream invariant, on purpose: with controls disallowed a non-zero torque is
+    # accepted only as a bounded release of the last accepted command (see test_release_*). From an
+    # idle stream (last accepted torque 0) nothing non-zero can ever pass, which is what the upstream
+    # test asserts; while enabled the upstream limits apply unchanged.
+    for speed in self._torque_speed_range:
+      self._reset_speed_measurement(speed)
+      max_torque = self._get_max_torque(speed)
+      for enabled in [0, 1]:
+        for t in range(int(-max_torque * 1.5), int(max_torque * 1.5)):
+          self._reset_safety_hooks()
+          self._reset_speed_measurement(speed)
+          self.safety.set_controls_allowed(enabled)
+          self._set_prev_torque(t)
+          if abs(t) > max_torque or (not enabled and abs(t) > 0):
+            self.assertFalse(self._tx(self._torque_cmd_msg(t)))
+          else:
+            self.assertTrue(self._tx(self._torque_cmd_msg(t)))
+
+  def test_release_ramps_down_after_disengage(self):
+    # the controller's 60 counts/frame release from the cap, both signs, then idle
+    for sign in (1, -1):
+      with self.subTest(sign=sign):
+        self._release_from(383 * sign)
+        for torque in (323, 263, 203, 143, 83, 23, 0, 0):
+          self.assertTrue(self._tx(self._torque_cmd_msg(torque * sign)), torque)
+        # once at zero the stream is idle again: nothing non-zero passes
+        self.assertFalse(self._tx(self._torque_cmd_msg(60 * sign)))
+
+  def test_release_must_shrink_by_the_stock_rate(self):
+    cases = ((383, False), (378, False), (377, True), (200, True), (1, True), (-377, False), (0, True))
+    for torque, accepted in cases:
+      with self.subTest(torque=torque):
+        self._release_from(383)
+        self.assertEqual(accepted, self._tx(self._torque_cmd_msg(torque)))
+    # each accepted step has to shrink again from the new value; hovering is refused
+    self._release_from(383)
+    self.assertTrue(self._tx(self._torque_cmd_msg(300)))
+    self.assertFalse(self._tx(self._torque_cmd_msg(300)))
+    self.assertFalse(self._tx(self._torque_cmd_msg(295)))
+    self.assertTrue(self._tx(self._torque_cmd_msg(294)))
+
+  def test_release_needs_the_control_bit(self):
+    self._release_from(383)
+    self.assertFalse(self._tx(self._torque_cmd_msg(323, steer_req=0)))
+    self.assertTrue(self._tx(self._torque_cmd_msg(323, steer_req=1)))
+    self.assertTrue(self._tx(self._torque_cmd_msg(0, steer_req=0)))
+
+  def test_release_is_capped_in_frames(self):
+    # ten decaying frames at the minimum step, the eleventh is refused however small
+    self._release_from(383)
+    for i in range(1, 11):
+      self.assertTrue(self._tx(self._torque_cmd_msg(383 - 6 * i)), i)
+    self.assertFalse(self._tx(self._torque_cmd_msg(383 - 6 * 11)))
+    self.assertFalse(self._tx(self._torque_cmd_msg(1)))
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+
+  def test_release_cannot_start_from_idle(self):
+    # a refused command while allowed leaves nothing to release from, and neither does idle
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(False)
+    for torque in (383, 60, 6, -6):
+      self.assertFalse(self._tx(self._torque_cmd_msg(torque)))
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.safety.set_controls_allowed(False)
+    self.assertFalse(self._tx(self._torque_cmd_msg(6)))
+
+  def test_release_frames_reset_when_controls_return(self):
+    self._release_from(383)
+    for i in range(1, 11):
+      self.assertTrue(self._tx(self._torque_cmd_msg(383 - 6 * i)))
+    # re-engage: normal limits, and a fresh release budget afterwards
+    self.safety.set_controls_allowed(True)
+    self._reset_torque_driver_measurement(0)
+    self._set_prev_torque(200)
+    self.assertTrue(self._tx(self._torque_cmd_msg(200)))
+    self.safety.set_controls_allowed(False)
+    self.assertTrue(self._tx(self._torque_cmd_msg(140)))
+    self.assertTrue(self._tx(self._torque_cmd_msg(80)))
+
+  def test_release_keeps_openpilot_the_sender(self):
+    # accepted release frames refresh the forwarding stamp, so the stream stays continuous
+    self._release_from(383)
+    self.safety.set_timer(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(323)))
+    self.safety.set_timer(40000)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.assertTrue(self._tx(self._torque_cmd_msg(263)))
+    self.safety.set_timer(80000)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+
   def test_stock_lkas_command_forwarding(self):
     # Until an LKAS_COMMAND passes the tx hook, stock remains the sole sender. Once openpilot has an
     # accepted stream it owns the address regardless of controls_allowed.

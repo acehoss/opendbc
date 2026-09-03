@@ -30,6 +30,19 @@ static bool chrysler_susw_lanesense_disabled = true;
 static uint32_t chrysler_susw_lkas_tx_ts = 0U;
 static bool chrysler_susw_lkas_tx_seen = false;
 
+// Bounded torque release after a disengage. The EPS faults on a torque cliff: every disengage it
+// survived cut <= 205 counts to zero in one frame, both faults (routes 00000133 t=2622.8 and
+// 00000149 t=1331.9) cut >= 279, and the stock camera never moves more than 6 counts per frame.
+// So once controls_allowed drops, a non-zero command is still accepted while it is a strict decay
+// of the last accepted one: same sign, at least CHRYSLER_SUSW_RELEASE_MIN_STEP smaller in
+// magnitude (the stock rate, so it cannot hover), control bit set, and for at most
+// CHRYSLER_SUSW_RELEASE_MAX_FRAMES frames. Zero is always accepted, as before. The controller
+// releases at 60 counts per frame, 383 -> 0 in 7 frames.
+#define CHRYSLER_SUSW_RELEASE_MIN_STEP 6
+#define CHRYSLER_SUSW_RELEASE_MAX_FRAMES 10U
+static int chrysler_susw_lkas_torque_last = 0;
+static uint32_t chrysler_susw_release_frames = 0U;
+
 // FCA CRC-8: poly 0x1D, init 0xFF, final xor 0xFF. Same algorithm as chrysler_compute_checksum(),
 // but SUSW needs the covered length to be per-message so the table driven form is used here.
 static uint8_t chrysler_susw_crc8_lut[256];
@@ -110,6 +123,8 @@ static safety_config chrysler_susw_init(uint16_t param) {
   chrysler_susw_lanesense_disabled = true;
   chrysler_susw_lkas_tx_ts = 0U;
   chrysler_susw_lkas_tx_seen = false;
+  chrysler_susw_lkas_torque_last = 0;
+  chrysler_susw_release_frames = 0U;
   gen_crc_lookup_table_8(0x1DU, chrysler_susw_crc8_lut);
 
   return BUILD_SAFETY_CFG(chrysler_susw_rx_checks, CHRYSLER_SUSW_TX_MSGS);
@@ -218,10 +233,31 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
 
     // Signal: LKAS_COMMAND.LKAS_CONTROL_BIT
     const bool steer_req = GET_BIT(msg, 12U);
-    if (steer_torque_cmd_checks(desired_torque, steer_req, CHRYSLER_SUSW_STEERING_LIMITS)) {
-      tx = false;
+
+    // bounded release after a disengage, see CHRYSLER_SUSW_RELEASE_MIN_STEP
+    bool release = false;
+    if (!controls_allowed && (desired_torque != 0)) {
+      const int last = chrysler_susw_lkas_torque_last;
+      const int last_abs = (last < 0) ? -last : last;
+      const int desired_abs = (desired_torque < 0) ? -desired_torque : desired_torque;
+      const bool same_sign = ((last > 0) && (desired_torque > 0)) || ((last < 0) && (desired_torque < 0));
+      release = same_sign && steer_req && (desired_abs <= (last_abs - CHRYSLER_SUSW_RELEASE_MIN_STEP)) &&
+                (chrysler_susw_release_frames < CHRYSLER_SUSW_RELEASE_MAX_FRAMES);
+    }
+
+    if (release) {
+      chrysler_susw_release_frames += 1U;
+    } else {
+      if (steer_torque_cmd_checks(desired_torque, steer_req, CHRYSLER_SUSW_STEERING_LIMITS)) {
+        tx = false;
+      }
+    }
+
+    if (controls_allowed) {
+      chrysler_susw_release_frames = 0U;
     }
     if (tx) {
+      chrysler_susw_lkas_torque_last = desired_torque;
       chrysler_susw_lkas_tx_ts = microsecond_timer_get();
       chrysler_susw_lkas_tx_seen = true;
     }
