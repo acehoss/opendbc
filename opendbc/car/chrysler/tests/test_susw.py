@@ -501,11 +501,35 @@ class TestSuswCarState(SuswTestBase):
     CS = self.update(DRIVING, engaged, {"LKA_HUD_2": LANESENSE_ON_GREEN})
     self.assertTrue(CS.cruiseState.enabled)
 
+  def test_speed_above_old_11_bit_full_scale(self):
+    # ABS_6.VEHICLE_SPEED is 12 bits. Decoded as 11 it wrapped at 34.8 m/s: route 00000150
+    # (2026-09 Oshkosh return) read 0.2-0.9 m/s at 35-36 m/s, dropping vEgo under minSteerSpeed and
+    # raising the below-33-mph steer alert at 80 mph (AH-299). These frames are captured from that
+    # route, bus 0, with the ABS_1 frame from the same instant.
+    for abs6, abs1_fl, expect in (
+      ("010180000000012f", 35.07, 35.020),   # t=12200.5, byte 0 bit 0 just set (count 2060)
+      ("0106200000000d9e", 35.55, 35.649),   # t=12203.0 (count 2097)
+      ("0100600000000fb2", 34.82, 34.867),   # t=12221.9, three LSB above the old ceiling (count 2051)
+      ("00fe400000000d5b", 34.65, 34.578),   # t=12223.1, back under it (count 2034)
+    ):
+      self.setUp()
+      packer = CANPacker("chrysler_susw")
+      wheels = packer.make_can_msg("ABS_1", 0, {f"WHEEL_SPEED_{w}": abs1_fl for w in ("FL", "FR", "RL", "RR")})[1].hex()
+      CS = self.update(DRIVING | {"ABS_6": abs6, "ABS_1": wheels})
+      self.assertAlmostEqual(CS.vEgoRaw, expect, places=2, msg=abs6)
+      self.assertFalse(CS.standstill)
+
+    # and the packer round-trips through the MSB
+    packer = CANPacker("chrysler_susw")
+    frame = packer.make_can_msg("ABS_6", 0, {"VEHICLE_SPEED": 40.})[1]
+    self.assertEqual(frame[0] & 0x01, 1)
+    self.assertAlmostEqual(TestSuswDbc._decode("ABS_6", 0x101, frame.hex())["VEHICLE_SPEED"], 40., delta=0.017)
+
   def test_speed_saturation_guard(self):
-    # ABS_6.VEHICLE_SPEED is 11 bits and saturates at 34.799 m/s; nothing in the captures reaches
-    # it, so a wrap above 125 km/h is unobserved. A wrap to zero would read as standstill and drop
-    # the LKAS control bit at highway speed. This frame is packed, not captured - no wrap exists in
-    # the data to record.
+    # ABS_6.VEHICLE_SPEED reading zero at highway speed would be taken as standstill and drop the
+    # LKAS control bit; the 13-bit ABS_1 wheel speeds are the fallback. This frame is packed, not
+    # captured - the observed failure was the 11-bit wrap in test_speed_above_old_11_bit_full_scale,
+    # and that never reached exactly zero.
     packer = CANPacker("chrysler_susw")
     wrapped = packer.make_can_msg("ABS_6", 0, {"VEHICLE_SPEED": 0.})[1].hex()
 

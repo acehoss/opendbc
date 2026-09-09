@@ -141,8 +141,9 @@ static void chrysler_susw_rx_hook(const CANPacket_t *msg) {
     }
 
     if (msg->addr == 0x101U) {
-      // Signal: ABS_6.VEHICLE_SPEED, all of byte 1 and the top 3 bits of byte 2
-      vehicle_moving = (msg->data[1] != 0U) || ((msg->data[2] >> 5) != 0U);
+      // Signal: ABS_6.VEHICLE_SPEED, 12 bits: bit 0 of byte 0 (MSB, set above 34.8 m/s), all of
+      // byte 1 and the top 3 bits of byte 2
+      vehicle_moving = ((msg->data[0] & 0x01U) != 0U) || (msg->data[1] != 0U) || ((msg->data[2] >> 5) != 0U);
     }
 
     if (msg->addr == 0xFAU) {
