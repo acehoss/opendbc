@@ -37,11 +37,14 @@ SUSW_STEER_RATE_INVALID = 2095.      # deg/s, EPS_1 STEERING_RATE raw 0xfff
 # as dead. CarState runs at 100 Hz and the gateway copies 0x103 at 100 Hz, so 50 cycles is 0.5 s.
 SUSW_ACC_TIMEOUT_FRAMES = 50
 
-# ABS_6.VEHICLE_SPEED is 11 bits and tops out here. No capture goes near it, so whether it clips or
-# wraps above 125 km/h is unobserved; the ABS_1 wheel speeds are 13 bits and cannot wrap in this
-# range, so they are the fallback. The threshold is far above any observed disagreement between the
-# two (mean 0.022 m/s, p99 0.119, max 0.565 over a whole route).
-SUSW_SPEED_MAX = 34.799              # m/s, ABS_6.VEHICLE_SPEED full scale
+# ABS_6.VEHICLE_SPEED is 12 bits: byte 0 bit 0 is the MSB above the 11 bits in bytes 1-2. It was
+# decoded as 11 bits until route 00000150 (2026-09, Oshkosh return) crossed 34.8 m/s and the low 11
+# bits wrapped to ~0.5 m/s, dropping vEgo under minSteerSpeed at 80 mph (AH-299). Full scale is now
+# 69.6 m/s, beyond the car, so the ceiling branch of the guard is a formality; the zero branch is
+# the one that matters. The ABS_1 wheel speeds are 13 bits and are the fallback. The mismatch
+# threshold is far above any observed disagreement between the two (mean 0.022 m/s, p99 0.119,
+# max 0.565 over a whole route).
+SUSW_SPEED_MAX = 69.615              # m/s, ABS_6.VEHICLE_SPEED full scale (4095 * 0.017)
 SUSW_SPEED_MISMATCH = 2.0            # m/s
 
 
@@ -232,9 +235,9 @@ class CarState(CarStateBase):
     ret.wheelSpeeds.rr = cp.vl["ABS_1"]["WHEEL_SPEED_RR"] * self.CP.wheelSpeedFactor
     # Saturation guard, not a filter: ABS_6.VEHICLE_SPEED is the speed source and is used unchanged
     # everywhere it is plausible. It only gets overridden by the wheel-speed mean at the two ends of
-    # its 11-bit range - pinned at full scale, or reading zero - and only when the 13-bit wheel
-    # speeds disagree by more than 2 m/s. A wrap to zero at highway speed would otherwise read as
-    # standstill and drop the LKAS control bit through the minSteerSpeed branch.
+    # its 12-bit range - pinned at full scale, or reading zero - and only when the 13-bit wheel
+    # speeds disagree by more than 2 m/s. A reading of zero at highway speed would otherwise be
+    # taken as standstill and drop the LKAS control bit through the minSteerSpeed branch.
     speed = cp.vl["ABS_6"]["VEHICLE_SPEED"]
     wheel_speed_mean = (ret.wheelSpeeds.fl + ret.wheelSpeeds.fr + ret.wheelSpeeds.rl + ret.wheelSpeeds.rr) / 4.
     if (speed >= SUSW_SPEED_MAX - 0.05 or speed <= 0.001) and abs(speed - wheel_speed_mean) > SUSW_SPEED_MISMATCH:

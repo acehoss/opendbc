@@ -595,8 +595,10 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
       self.assertTrue(self.safety.get_controls_allowed(), f"{throttle=}")
 
   def test_vehicle_moving_low_speeds(self):
-    # VEHICLE_SPEED spans all of byte 1 and the top 3 bits of byte 2
-    for raw in (1, 8):
+    # VEHICLE_SPEED is 12 bits: bit 0 of byte 0, all of byte 1 and the top 3 bits of byte 2. Each
+    # of the three slices must count as moving on its own; 2048 is the MSB alone, which is what the
+    # frame looks like 0.017 m/s above the old 11-bit full scale (AH-299).
+    for raw in (1, 8, 2048):
       self.assertTrue(self._rx(self._speed_msg(raw * 0.017)))
       self.assertTrue(self.safety.get_vehicle_moving(), f"{raw=}")
       self.assertTrue(self._rx(self._speed_msg(0)))
