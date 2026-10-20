@@ -179,6 +179,17 @@ STEER_THRESHOLD = 120
 # STEER_DRIVER_ALLOWANCE, a separate safety parameter, still 80 (AH-161).
 SUSW_STEER_THRESHOLD = 160
 
+# SUSW only. Hands-off nag pre-warning (Redmine #1854; analysis in data/nag_results/REPORT.md).
+# The car's nag (LKA_HUD_2.LKA_WARNING_BITS 0 -> 3 in LKA_HUD_STATE 12) fits a ~5.3 s timer that
+# resets on driver torque >= 60 counts for 2 consecutive samples and only fires while the torque has
+# also been calm. openpilot chimes once at 4.0 s of quiet while calm, to warn ahead of it. These are
+# the five tunables of that rule; nag_prewarn.py implements it and nothing else hard-codes them.
+SUSW_NAG_RESET_TORQUE = 60       # counts, |EPS_2.DRIVER_TORQUE| at or above this is a driver input
+SUSW_NAG_RESET_SAMPLES = 2       # consecutive 100 Hz samples at/above SUSW_NAG_RESET_TORQUE to reset
+SUSW_NAG_CHIME_TIME = 4.0        # s of quiet at which the pre-warning chimes (if calm)
+SUSW_NAG_SD_WINDOW = 3.0         # s, rolling window of the DRIVER_TORQUE standard deviation
+SUSW_NAG_SD_CALM = 14.           # counts, the torque is calm while that SD is below this
+
 RAM_DT = {CAR.RAM_1500_5TH_GEN, }
 RAM_HD = {CAR.RAM_HD_5TH_GEN, }
 RAM_CARS = RAM_DT | RAM_HD
