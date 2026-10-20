@@ -1052,8 +1052,9 @@ class TestSuswNagPrewarning(unittest.TestCase):
     self.assertAlmostEqual(self.nag.quiet, 2.1)
 
   def test_counts_only_in_hud_state_12_with_lateral_active(self):
-    # 2 grey, 16/20/22 the lane-departure variant, 32 the LaneSense fault display, 0 before any LKA_HUD_2
-    for hud_state in (0, 2, 16, 20, 22, 32):
+    # 0 LaneSense off (and before any LKA_HUD_2), 2 grey, 32 the LaneSense fault display all reset;
+    # the yellow states hold, so from a standing start they never count either
+    for hud_state in (0, 2, 32, 16, 20, 22, 24):
       with self.subTest(hud_state=hud_state):
         self.setUp()
         chimes = self._feed([0] * 1000, hud_state=hud_state)
@@ -1075,13 +1076,48 @@ class TestSuswNagPrewarning(unittest.TestCase):
         self.assertFalse(any(self._feed([0] * 1000, warning_bits=warning_bits)))
         self.assertEqual(self.nag.quiet, 0.)
 
-  def test_hud_state_flicker_resets(self):
-    # as specified: a single non-12 sample restarts the timer (see the NOTE in nag_prewarn.py)
-    self._feed([0] * 350)
-    self._feed([0], hud_state=20)
-    self.assertEqual(self.nag.quiet, 0.)
-    chimes = self._feed([0] * 500)
-    self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
+  def test_reset_hud_states_restart_the_timer(self):
+    # a single grey / off / fault sample restarts the timer
+    for hud_state in (0, 2, 32):
+      with self.subTest(hud_state=hud_state):
+        self.setUp()
+        self._feed([0] * 350)
+        self._feed([0], hud_state=hud_state)
+        self.assertEqual(self.nag.quiet, 0.)
+        chimes = self._feed([0] * 500)
+        self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
+
+  def test_yellow_hud_states_hold_the_timer(self):
+    # 16/20/22/24 neither count nor reset: 3.5 s, a 1 s yellow stretch, then 0.5 s more chimes at 4.0 s
+    for hud_state in (16, 20, 22, 24):
+      with self.subTest(hud_state=hud_state):
+        self.setUp()
+        self._feed([0] * 350)
+        self.assertFalse(any(self._feed([0] * 100, hud_state=hud_state)))
+        self.assertAlmostEqual(self.nag.quiet, 3.5)
+        chimes = self._feed([0] * 100)
+        self.assertEqual([i for i, c in enumerate(chimes) if c], [49])
+        self.assertAlmostEqual(self.nag.quiet, 4.5)
+
+  def test_no_chime_during_a_hold(self):
+    # quiet already past 4.0 s and calm only arrives while the HUD is yellow: the chime waits for 12
+    self._feed([40 if i % 2 else -40 for i in range(450)])
+    self.assertFalse(self.nag.calm)
+    self.assertFalse(any(self._feed([0] * 400, hud_state=20)))
+    self.assertTrue(self.nag.calm)
+    self.assertAlmostEqual(self.nag.quiet, 4.5)
+    chimes = self._feed([0] * 10)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [0])
+
+  def test_driver_input_and_warning_reset_during_a_hold(self):
+    for label, feed in (("torque", lambda: self._feed([80, 80], hud_state=20)),
+                        ("warning", lambda: self._feed([0], hud_state=20, warning_bits=3)),
+                        ("lateral", lambda: self._feed([0], hud_state=20, lat_active=False))):
+      with self.subTest(reset=label):
+        self.setUp()
+        self._feed([0] * 350)
+        feed()
+        self.assertEqual(self.nag.quiet, 0.)
 
   def test_chime_exactly_once_at_4_s_when_calm(self):
     chimes = self._feed([5] * 2000)
