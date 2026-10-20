@@ -37,6 +37,10 @@ class CarController(CarControllerBase):
     # SUSW is lateral only: no cruise button TX (the buttons are on a bus openpilot cannot write)
     # and no HUD TX (the cluster HUD messages have not been decoded or safety validated)
     susw = self.CP.carFingerprint in SUSW_CARS
+    if susw:
+      # the hands-off nag pre-warning only counts while openpilot is steering; CarState reads this on
+      # its next update (#1854)
+      CS.susw_lat_active = CC.latActive
 
     # RPGW gateway heartbeat, 10 Hz on the private fusion bus, sent whether or not openpilot is
     # engaged. NOTE: while the platform is dashcamOnly, card.py substitutes the noOutput safety mode

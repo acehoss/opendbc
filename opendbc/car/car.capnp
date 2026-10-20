@@ -205,6 +205,11 @@ struct CarState {
   blockPcmEnable @60 :Bool;  # whether to allow PCM to enable this frame
   carNotReady @61 :Bool;  # car is transiently refusing engagement, used to prevent a fault if engaged
 
+  # Fork (acehoss/opendbc), Chrysler SUSW only: hands-off nag pre-warning state, logged at the
+  # carState rate so every chime and every real nag can be scored offline (Redmine #1854).
+  # Default-zero on every other car.
+  nagPrewarning @61 :NagPrewarning;
+
   # cruise state
   cruiseState @10 :CruiseState;
 
@@ -235,6 +240,13 @@ struct CarState {
     fr @1 :Float32;
     rl @2 :Float32;
     rr @3 :Float32;
+  }
+
+  struct NagPrewarning {
+    quiet @0 :Float32;     # s since the last reset; counts only while LKA_HUD_STATE 12 and latActive
+    torqueSd @1 :Float32;  # rolling SD of EPS_2.DRIVER_TORQUE over SUSW_NAG_SD_WINDOW, counts
+    calm @2 :Bool;         # torqueSd < SUSW_NAG_SD_CALM over a full window
+    chime @3 :Bool;        # true on the one frame the pre-warning chimes
   }
 
   struct CruiseState {

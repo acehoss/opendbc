@@ -1,5 +1,7 @@
 import unittest
 
+import numpy as np
+
 from opendbc.can import CANDefine, CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
@@ -9,7 +11,9 @@ from opendbc.car.fingerprints import _FINGERPRINTS as ALL_FINGERPRINTS
 from opendbc.car.chrysler.chryslercan import create_comma_heartbeat, create_lkas_command
 from opendbc.car.chrysler.fingerprints import FINGERPRINTS
 from opendbc.car.chrysler.interface import CarInterface
-from opendbc.car.chrysler.values import CAR, CarControllerParams
+from opendbc.car.chrysler.nag_prewarn import NagPrewarning, RollingStd
+from opendbc.car.chrysler.values import (CAR, CarControllerParams, SUSW_NAG_CHIME_TIME, SUSW_NAG_RESET_SAMPLES,
+                                         SUSW_NAG_RESET_TORQUE, SUSW_NAG_SD_CALM, SUSW_NAG_SD_WINDOW)
 from opendbc.safety.tests.common import CANPackerSafety, make_msg
 from opendbc.safety.tests.libsafety import libsafety_py
 
@@ -1006,6 +1010,224 @@ class TestSuswHandover(SuswTestBase):
     self.assertEqual(self.accepted_op_counters[-1], 0)
     self.assertNotEqual(self.accepted_op_counters[-1], 14)
     self.assertEqual(self.safety.safety_fwd_hook(2, 0x1f6), -1)
+
+
+class TestSuswNagPrewarning(unittest.TestCase):
+  """Hands-off nag pre-warning (Redmine #1854): quiet timer, rolling torque SD, one chime per stretch."""
+  CHIME_FRAMES = 400   # SUSW_NAG_CHIME_TIME / DT_CTRL
+  WINDOW = 300         # SUSW_NAG_SD_WINDOW / DT_CTRL
+
+  def setUp(self):
+    self.nag = NagPrewarning()
+
+  def _feed(self, torques, hud_state: int = 12, warning_bits: int = 0, lat_active: bool = True) -> list[bool]:
+    return [self.nag.update(tq, hud_state, warning_bits, lat_active) for tq in torques]
+
+  def test_tunables(self):
+    # the five numbers the ticket decided, in values.py only; changing one should be a deliberate edit
+    self.assertEqual((SUSW_NAG_RESET_TORQUE, SUSW_NAG_RESET_SAMPLES, SUSW_NAG_CHIME_TIME, SUSW_NAG_SD_WINDOW, SUSW_NAG_SD_CALM),
+                     (60, 2, 4.0, 3.0, 14.))
+    self.assertEqual(round(SUSW_NAG_CHIME_TIME / DT_CTRL), self.CHIME_FRAMES)
+    self.assertEqual(round(SUSW_NAG_SD_WINDOW / DT_CTRL), self.WINDOW)
+
+  def test_two_consecutive_samples_at_60_reset(self):
+    for first, second in ((60, 60), (-60, -60), (60, -60), (1024, -1024)):
+      with self.subTest(first=first, second=second):
+        self.setUp()
+        self._feed([0] * 300)
+        self.assertAlmostEqual(self.nag.quiet, 3.0)
+        self._feed([first])
+        self.assertAlmostEqual(self.nag.quiet, 3.01)   # one sample is not an input yet
+        self._feed([second])
+        self.assertEqual(self.nag.quiet, 0.)          # the second consecutive one resets
+        self._feed([0] * 5)
+        self.assertAlmostEqual(self.nag.quiet, 0.05)
+
+  def test_single_sample_does_not_reset(self):
+    self._feed([0] * 100)
+    self._feed([60, 0, -60, 0, 1024, 0, 59, 59, 59, 59])
+    self.assertAlmostEqual(self.nag.quiet, 1.1)
+    # just under the threshold, held for a second, is no input either
+    self._feed([59] * 100)
+    self.assertAlmostEqual(self.nag.quiet, 2.1)
+
+  def test_counts_only_in_hud_state_12_with_lateral_active(self):
+    # 2 grey, 16/20/22 the lane-departure variant, 32 the LaneSense fault display, 0 before any LKA_HUD_2
+    for hud_state in (0, 2, 16, 20, 22, 32):
+      with self.subTest(hud_state=hud_state):
+        self.setUp()
+        chimes = self._feed([0] * 1000, hud_state=hud_state)
+        self.assertEqual(self.nag.quiet, 0.)
+        self.assertFalse(any(chimes))
+        # back in 12 the timer starts from zero, not from where it was
+        self._feed([0] * 10)
+        self.assertAlmostEqual(self.nag.quiet, 0.1)
+
+    with self.subTest("openpilot lateral inactive"):
+      self.setUp()
+      self.assertFalse(any(self._feed([0] * 1000, lat_active=False)))
+      self.assertEqual(self.nag.quiet, 0.)
+
+    for warning_bits in (1, 2, 3):
+      with self.subTest(warning_bits=warning_bits):
+        self.setUp()
+        self._feed([0] * 350)
+        self.assertFalse(any(self._feed([0] * 1000, warning_bits=warning_bits)))
+        self.assertEqual(self.nag.quiet, 0.)
+
+  def test_hud_state_flicker_resets(self):
+    # as specified: a single non-12 sample restarts the timer (see the NOTE in nag_prewarn.py)
+    self._feed([0] * 350)
+    self._feed([0], hud_state=20)
+    self.assertEqual(self.nag.quiet, 0.)
+    chimes = self._feed([0] * 500)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
+
+  def test_chime_exactly_once_at_4_s_when_calm(self):
+    chimes = self._feed([5] * 2000)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
+    self.assertTrue(self.nag.calm)
+    self.assertAlmostEqual(self.nag.quiet, 20.0)
+
+    # the chime frame itself reads 4.00 s, calm, chime; its neighbours do not chime
+    self.setUp()
+    self._feed([5] * (self.CHIME_FRAMES - 1))
+    self.assertFalse(self.nag.chime)
+    self.assertTrue(self._feed([5])[0])
+    self.assertAlmostEqual(self.nag.quiet, SUSW_NAG_CHIME_TIME)
+    self.assertTrue(self.nag.calm and self.nag.chime)
+    self.assertFalse(self._feed([5])[0])
+    self.assertFalse(self.nag.chime)
+
+  def test_no_chime_when_not_calm(self):
+    # +-40 never reaches the 60 count reset, but its SD (~40) is far above 14: quiet runs, no chime
+    wiggle = [40 if i % 2 else -40 for i in range(2000)]
+    chimes = self._feed(wiggle)
+    self.assertFalse(any(chimes))
+    self.assertAlmostEqual(self.nag.quiet, 20.0)
+    self.assertFalse(self.nag.calm)
+    self.assertGreater(self.nag.torque_sd, SUSW_NAG_SD_CALM)
+
+  def test_chime_waits_for_calm_after_4_s(self):
+    # not calm at 4.0 s: no chime there. Calm arrives as the wiggle (stopped at 2.0 s) drains out of
+    # the 3 s window, and the chime fires on the first calm frame, once.
+    wiggle_frames = 200
+    trace = np.array([40 if i % 2 else -40 for i in range(wiggle_frames)] + [0] * 1000)
+    chimes = self._feed(trace)
+    sd = np.lib.stride_tricks.sliding_window_view(trace, self.WINDOW).std(axis=1, ddof=1)
+    first_calm = self.WINDOW - 1 + int(np.argmax(sd < SUSW_NAG_SD_CALM))
+    self.assertGreater(first_calm, self.CHIME_FRAMES - 1)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [first_calm])
+
+  def test_rearm_after_reset(self):
+    for label, reset in (("torque", lambda: self._feed([80, 80])),
+                         ("hud state", lambda: self._feed([0], hud_state=2)),
+                         ("warning", lambda: self._feed([0], warning_bits=3)),
+                         ("lateral", lambda: self._feed([0], lat_active=False))):
+      with self.subTest(reset=label):
+        self.setUp()
+        first = self._feed([0] * 1000)
+        self.assertEqual(sum(first), 1)
+        reset()
+        self.assertEqual(self.nag.quiet, 0.)
+        # after the torque reset the window still holds the two 80s, but their SD over 300 samples is
+        # ~6.5, so calm holds and the second chime is again exactly 4.0 s after the reset
+        second = self._feed([0] * 1000)
+        self.assertEqual([i for i, c in enumerate(second) if c], [self.CHIME_FRAMES - 1])
+
+  def test_no_rechime_while_calm_flickers(self):
+    # once chimed, calm going away and coming back without a reset must not chime again
+    self._feed([0] * 500)
+    self._feed([40 if i % 2 else -40 for i in range(100)])
+    self.assertFalse(self.nag.calm)
+    self.assertFalse(any(self._feed([0] * 1000)))
+    self.assertTrue(self.nag.calm)
+
+  def test_sd_matches_numpy(self):
+    # synthetic trace: a slow sine drift, gaussian hand noise and a few calm and busy stretches, in whole counts
+    rng = np.random.default_rng(1854)
+    n = 6000
+    t = np.arange(n) * DT_CTRL
+    noise = rng.normal(0., 1., n) * np.where((t % 20) < 8, 6., 25.)
+    trace = np.round(40. * np.sin(2 * np.pi * t / 17.) + noise).astype(int)
+    trace = np.clip(trace, -59, 59)   # keep it below the reset so this is purely the SD path
+    sds, calms = [], []
+    for x in trace:
+      self.nag.update(float(x), 12, 0, True)
+      sds.append(self.nag.torque_sd)
+      calms.append(self.nag.calm)
+    sds, calms = np.array(sds), np.array(calms)
+
+    full = np.lib.stride_tricks.sliding_window_view(trace, self.WINDOW).std(axis=1, ddof=1)
+    np.testing.assert_allclose(sds[self.WINDOW - 1:], full, rtol=1e-9, atol=1e-9)
+    partial = np.array([trace[:i + 1].std(ddof=1) for i in range(1, self.WINDOW - 1)])
+    np.testing.assert_allclose(sds[1:self.WINDOW - 1], partial, rtol=1e-9, atol=1e-9)
+
+    # calm is SD < 14 over a full window, never before it has filled
+    self.assertFalse(calms[:self.WINDOW - 1].any())
+    np.testing.assert_array_equal(calms[self.WINDOW - 1:], full < SUSW_NAG_SD_CALM)
+    self.assertTrue(calms.any() and not calms.all())   # the trace exercises both sides
+
+  def test_rolling_std_is_exact_over_a_long_drive(self):
+    # integer sums cannot drift: an hour of large alternating torque, then a constant, reads exactly 0
+    sd = RollingStd(self.WINDOW)
+    for i in range(360_000):
+      sd.update(1000 if i % 2 else -1000)
+    for _ in range(self.WINDOW):
+      sd.update(7)
+    self.assertEqual(sd.std, 0.)
+
+
+class TestSuswNagPrewarningCarState(SuswTestBase):
+  """The tracker as wired: EPS_2 and LKA_HUD_2 from the CAN parsers, latActive from the last CarControl."""
+  def setUp(self):
+    super().setUp()
+    self.packer = CANPacker("chrysler_susw")
+
+  def _frame(self, lat_active: bool, torque: int = 0, hud_state: int = 12, warning_bits: int = 0):
+    eps_2 = self.packer.make_can_msg("EPS_2", 0, {"DRIVER_TORQUE": torque})[1].hex()
+    hud = self.packer.make_can_msg("LKA_HUD_2", 2, {"LKA_HUD_STATE": hud_state, "LKA_WARNING_BITS": warning_bits})[1].hex()
+    CS = self.update(DRIVING | {"EPS_2": eps_2},
+                     {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE},
+                     {"LKA_HUD_2": hud})
+    CC = structs.CarControl()
+    CC.enabled = True
+    CC.latActive = lat_active
+    self.CI.apply(CC.as_reader(), self.nanos)
+    return CS
+
+  def test_logged_fields_and_chime(self):
+    states = [self._frame(lat_active=True) for _ in range(600)]
+    self.assertTrue(states[0].cruiseState.enabled)
+    # frame 0 sees the latActive of no CarControl yet; counting starts on frame 1, 10 ms behind
+    self.assertEqual(states[0].nagPrewarning.quiet, 0.)
+    self.assertAlmostEqual(states[1].nagPrewarning.quiet, 0.01, places=5)
+    chimes = [i for i, CS in enumerate(states) if CS.nagPrewarning.chime]
+    self.assertEqual(chimes, [400])
+    CS = states[400]
+    self.assertAlmostEqual(CS.nagPrewarning.quiet, 4.0, places=5)
+    self.assertTrue(CS.nagPrewarning.calm)
+    self.assertEqual(CS.nagPrewarning.torqueSd, 0.)
+    # the carState fields are what the UI reads: orange wheel = calm and quiet > 0
+    self.assertFalse(states[1].nagPrewarning.calm)   # window not yet full
+    self.assertTrue(states[299].nagPrewarning.calm and states[299].nagPrewarning.quiet > 0)
+
+  def test_not_counting_without_lateral_or_outside_state_12(self):
+    for kwargs in ({"lat_active": False}, {"lat_active": True, "hud_state": 2},
+                   {"lat_active": True, "hud_state": 20}, {"lat_active": True, "warning_bits": 3}):
+      with self.subTest(**kwargs):
+        self.setUp()
+        states = [self._frame(**kwargs) for _ in range(600)]
+        self.assertTrue(all(CS.nagPrewarning.quiet == 0. and not CS.nagPrewarning.chime for CS in states))
+
+  def test_driver_torque_reset_through_the_parser(self):
+    for _ in range(300):
+      self._frame(lat_active=True)
+    self._frame(lat_active=True, torque=-75)
+    self.assertGreater(self.CI.CS.out.nagPrewarning.quiet, 2.9)
+    CS = self._frame(lat_active=True, torque=-75)
+    self.assertEqual(CS.steeringTorque, -75)
+    self.assertEqual(CS.nagPrewarning.quiet, 0.)
 
 
 class TestSuswDbc(unittest.TestCase):
