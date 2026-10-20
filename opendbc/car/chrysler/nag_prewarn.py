@@ -6,9 +6,9 @@ and the working model is a ~5.3 s timer that resets on a driver input of >= 60 c
 consecutive samples and fires only while the torque has also been calm. This tracker mirrors that
 model so openpilot can chime first:
 
-  quiet  seconds since the last reset. A reset is a driver input (the 2-sample rule), a nonzero
-         warning, LKA_HUD_STATE != 12, or openpilot lateral inactive: the timer only counts while
-         the HUD is green-armed and openpilot is steering, and restarts from zero otherwise.
+  quiet  seconds counted since the last reset. A reset is a driver input (the 2-sample rule), a
+         nonzero warning, openpilot lateral inactive, or an LKA_HUD_STATE other than 12 and the
+         yellow states 16/20/22/24. It counts only in state 12 and holds through the yellow ones.
   sd     sample standard deviation (ddof=1, as pandas rolling().std() in the analysis) of
          DRIVER_TORQUE over the last SUSW_NAG_SD_WINDOW seconds, every sample, whatever the gate.
   calm   sd < SUSW_NAG_SD_CALM over a full window. Never calm before the window has filled.
@@ -28,12 +28,15 @@ from opendbc.car import DT_CTRL
 from opendbc.car.chrysler.values import (SUSW_NAG_CHIME_TIME, SUSW_NAG_RESET_SAMPLES, SUSW_NAG_RESET_TORQUE,
                                          SUSW_NAG_SD_CALM, SUSW_NAG_SD_WINDOW)
 
-# LKA_HUD_2.LKA_HUD_STATE 12 is LaneSense green/armed, the only state the hands-off nag fires in.
-# Every other state resets, as #1854 specifies. NOTE the corpus says the car's own timer does not:
-# 11 of the 73 nags had a 16/20 (yellow) or 2 (grey) frame in the 6 s before them. Replayed over
-# the corpus this rule warns 58/73 nags (79 %); holding instead of resetting through 16/20/22
-# recovers the ticket's ~89 %. Left as specified until Aaron decides.
+# LKA_HUD_2.LKA_HUD_STATE 12 is LaneSense green/armed, the only state the hands-off nag fires in and
+# the only one the timer counts in. The yellow lane-departure / intervention displays hold it: the
+# car's own timer runs through them (11 of the 73 corpus nags had a 16/20 frame in the 6 s before
+# them), so they neither count nor reset, and no chime fires while one is showing. Any other state -
+# 0 LaneSense off, 2 grey, 32 fault display - resets. Decided 2026-10-20 on #1854; resetting on every
+# state != 12 warned 58/73 corpus nags. Driver input, a warning and latActive false still reset
+# during a hold.
 LKA_HUD_STATE_ARMED = 12
+LKA_HUD_STATES_HOLD = (16, 20, 22, 24)
 
 
 class RollingStd:
@@ -102,15 +105,16 @@ class NagPrewarning:
     self.torque_sd = self._sd.update(torque)
     self.calm = self._sd.full and self.torque_sd < SUSW_NAG_SD_CALM
 
-    reset = (self._torque_run >= SUSW_NAG_RESET_SAMPLES or warning_bits != 0 or
-             hud_state != LKA_HUD_STATE_ARMED or not lat_active)
+    hold = hud_state in LKA_HUD_STATES_HOLD
+    reset = (self._torque_run >= SUSW_NAG_RESET_SAMPLES or warning_bits != 0 or not lat_active or
+             (hud_state != LKA_HUD_STATE_ARMED and not hold))
     if reset:
       self.quiet_frames = 0
       self._armed = True
-    else:
+    elif not hold:
       self.quiet_frames += 1
 
-    self.chime = self._armed and self.calm and self.quiet_frames >= self._chime_frames
+    self.chime = self._armed and not hold and self.calm and self.quiet_frames >= self._chime_frames
     if self.chime:
       self._armed = False
     return self.chime
