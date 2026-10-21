@@ -7,8 +7,8 @@ consecutive samples and fires only while the torque has also been calm. This tra
 model so openpilot can chime first:
 
   quiet  seconds since the last reset. A reset is a driver input (the 2-sample rule), a nonzero
-         warning, openpilot lateral inactive, or an LKA_HUD_STATE outside 12 and the yellow states
-         16/20/22/24. It counts in all five of those.
+         warning, openpilot lateral inactive, or LKA_HUD_STATE 0 (LaneSense off) or 32 (fault
+         display). It counts in every other state: 12 green, 2 grey, 16/20/22/24 yellow.
   sd     sample standard deviation (ddof=1, as pandas rolling().std() in the analysis) of
          DRIVER_TORQUE over the last SUSW_NAG_SD_WINDOW seconds, every sample, whatever the gate.
   calm   sd < SUSW_NAG_SD_CALM over a full window. Never calm before the window has filled.
@@ -29,12 +29,14 @@ from opendbc.car.chrysler.values import (SUSW_NAG_CHIME_TIME, SUSW_NAG_RESET_SAM
                                          SUSW_NAG_SD_CALM, SUSW_NAG_SD_WINDOW)
 
 # LKA_HUD_2.LKA_HUD_STATE: the timer counts in 12 (LaneSense green/armed, the state the hands-off nag
-# fires in) and straight through the yellow lane-departure / intervention displays 16/20/22/24, and the
-# chime may fire in any of them. The car's own timer runs through the yellow states: 11 of the 73
-# corpus nags had a 16/20 frame in the 6 s before them. Any other state - 0 LaneSense off, 2 grey,
-# 32 fault display - resets. Decided 2026-10-20 on #1854 from the corpus replay: reset on every
-# state != 12 warned 58/73 nags, holding through yellow 61/73, counting through it 66/73.
-LKA_HUD_STATES_COUNTING = (12, 16, 20, 22, 24)
+# fires in), through 2 (grey, no lanes) and through the yellow lane-departure / intervention displays
+# 16/20/22/24, and the chime may fire in any of them. Only 0 (LaneSense off) and 32 (fault display)
+# reset. The car's own timer runs through yellow (11 of the 73 corpus nags had a 16/20 frame in the
+# 6 s before them) and through grey: on route 0000025f four of the five un-chimed nags had a 2-4 s
+# grey stretch in the 5 s before them (nag at 256.0 s: 17 grey frames then 10 green, torque never
+# above 19). Decided on #1854: reset on every state != 12 warned 58/73 corpus nags, holding through
+# yellow 61/73, counting through yellow 66/73.
+LKA_HUD_STATES_COUNTING = (2, 12, 16, 20, 22, 24)
 
 
 class RollingStd:
