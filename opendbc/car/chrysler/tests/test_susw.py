@@ -1051,9 +1051,9 @@ class TestSuswNagPrewarning(unittest.TestCase):
     self._feed([59] * 100)
     self.assertAlmostEqual(self.nag.quiet, 2.1)
 
-  def test_counts_only_in_green_or_yellow_with_lateral_active(self):
-    # 0 LaneSense off (and before any LKA_HUD_2), 2 grey and 32 the LaneSense fault display all reset
-    for hud_state in (0, 2, 32):
+  def test_no_counting_when_off_or_faulted_or_lateral_inactive(self):
+    # 0 LaneSense off (and before any LKA_HUD_2) and 32 the LaneSense fault display reset
+    for hud_state in (0, 32):
       with self.subTest(hud_state=hud_state):
         self.setUp()
         chimes = self._feed([0] * 1000, hud_state=hud_state)
@@ -1076,8 +1076,8 @@ class TestSuswNagPrewarning(unittest.TestCase):
         self.assertEqual(self.nag.quiet, 0.)
 
   def test_reset_hud_states_restart_the_timer(self):
-    # a single grey / off / fault sample restarts the timer
-    for hud_state in (0, 2, 32):
+    # a single off / fault sample restarts the timer
+    for hud_state in (0, 32):
       with self.subTest(hud_state=hud_state):
         self.setUp()
         self._feed([0] * 350)
@@ -1111,6 +1111,30 @@ class TestSuswNagPrewarning(unittest.TestCase):
     self.assertAlmostEqual(self.nag.quiet, 3.51)
     chimes = self._feed([0] * 100)
     self.assertEqual([i for i, c in enumerate(chimes) if c], [48])
+
+  def test_grey_flicker_does_not_restart_the_timer(self):
+    # HUD state 2 (grey, no lanes) counts through like yellow: one grey frame inside a green stretch
+    self._feed([0] * 350)
+    self._feed([0], hud_state=2)
+    self.assertAlmostEqual(self.nag.quiet, 3.51)
+    chimes = self._feed([0] * 100)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [48])
+
+  def test_grey_stretch_counts_through(self):
+    # route 0000025f, the un-chimed nag at 256.0 s: 17 grey LKA_HUD_2 frames (4.25 s at 4 Hz) then 10
+    # green (2.5 s), torque never above 19. The timer counts from the start of the grey stretch and the
+    # chime fires at 4.0 s, still grey, 3 s before the car's nag; the green tail does not chime again.
+    torque = [(i * 7) % 39 - 19 for i in range(675)]   # |tq| <= 19, SD ~11: calm
+    self.assertLessEqual(max(abs(x) for x in torque), 19)
+    grey = self._feed(torque[:425], hud_state=2)
+    self.assertEqual([i for i, c in enumerate(grey) if c], [self.CHIME_FRAMES - 1])
+    self.assertFalse(any(self._feed(torque[425:])))
+    self.assertAlmostEqual(self.nag.quiet, 6.75)
+
+    # and a 2 s grey stretch in the middle of green counts as if it had stayed green
+    self.setUp()
+    chimes = self._feed([0] * 100) + self._feed([0] * 200, hud_state=2) + self._feed([0] * 200)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
 
   def test_driver_input_and_warning_reset_in_yellow(self):
     for label, feed in (("torque", lambda: self._feed([80, 80], hud_state=20)),
@@ -1160,7 +1184,7 @@ class TestSuswNagPrewarning(unittest.TestCase):
 
   def test_rearm_after_reset(self):
     for label, reset in (("torque", lambda: self._feed([80, 80])),
-                         ("hud state", lambda: self._feed([0], hud_state=2)),
+                         ("hud state", lambda: self._feed([0], hud_state=0)),
                          ("warning", lambda: self._feed([0], warning_bits=3)),
                          ("lateral", lambda: self._feed([0], lat_active=False))):
       with self.subTest(reset=label):
@@ -1252,7 +1276,7 @@ class TestSuswNagPrewarningCarState(SuswTestBase):
     self.assertTrue(states[299].nagPrewarning.calm and states[299].nagPrewarning.quiet > 0)
 
   def test_not_counting_without_lateral_or_outside_state_12(self):
-    for kwargs in ({"lat_active": False}, {"lat_active": True, "hud_state": 2},
+    for kwargs in ({"lat_active": False}, {"lat_active": True, "hud_state": 0},
                    {"lat_active": True, "hud_state": 32}, {"lat_active": True, "warning_bits": 3}):
       with self.subTest(**kwargs):
         self.setUp()
