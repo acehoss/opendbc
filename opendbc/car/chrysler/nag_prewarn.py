@@ -14,9 +14,9 @@ model so openpilot can chime first:
   calm   sd < SUSW_NAG_SD_CALM over a full window. Never calm before the window has filled.
   chime  one-sample pulse: the first sample of a counting stretch with quiet >= SUSW_NAG_CHIME_TIME
          while calm. It then stays disarmed until the next reset. If the torque is not calm at
-         4.0 s the chime waits for calm and fires when it arrives, still before any reset. That is
-         the analysis' rule (first moment both hold); chiming only if calm on the exact 4.0 s
-         sample warns 44 of 73 corpus nags instead of 58.
+         the chime time it waits for calm and fires when it arrives, still before any reset. That
+         is the analysis' rule (first moment both hold); chiming only if calm on the exact chime-time
+         sample warned 44 of 73 corpus nags instead of 58 (at 4.0 s, before the HUD-state fixes).
 
 One sample per 100 Hz CarState frame. Its inputs are logged (carState.steeringTorque, the LKA_HUD_2
 frames in can, carControl.latActive one frame earlier) and so are its outputs (carState.nagPrewarning),
@@ -87,7 +87,7 @@ class NagPrewarning:
     self._chime_frames = round(SUSW_NAG_CHIME_TIME / DT_CTRL)
     self._torque_run = 0
     self._armed = True
-    # counted in frames, not accumulated seconds, so 4.0 s is exactly frame 400 with no float drift
+    # counted in frames, not accumulated seconds, so 3.5 s is exactly frame 350 with no float drift
     self.quiet_frames = 0
     self.torque_sd = 0.
     self.calm = False
