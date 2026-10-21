@@ -1014,7 +1014,7 @@ class TestSuswHandover(SuswTestBase):
 
 class TestSuswNagPrewarning(unittest.TestCase):
   """Hands-off nag pre-warning (Redmine #1854): quiet timer, rolling torque SD, one chime per stretch."""
-  CHIME_FRAMES = 400   # SUSW_NAG_CHIME_TIME / DT_CTRL
+  CHIME_FRAMES = 350   # SUSW_NAG_CHIME_TIME / DT_CTRL
   WINDOW = 300         # SUSW_NAG_SD_WINDOW / DT_CTRL
 
   def setUp(self):
@@ -1026,7 +1026,7 @@ class TestSuswNagPrewarning(unittest.TestCase):
   def test_tunables(self):
     # the five numbers the ticket decided, in values.py only; changing one should be a deliberate edit
     self.assertEqual((SUSW_NAG_RESET_TORQUE, SUSW_NAG_RESET_SAMPLES, SUSW_NAG_CHIME_TIME, SUSW_NAG_SD_WINDOW, SUSW_NAG_SD_CALM),
-                     (60, 2, 4.0, 3.0, 14.))
+                     (60, 2, 3.5, 3.0, 14.))
     self.assertEqual(round(SUSW_NAG_CHIME_TIME / DT_CTRL), self.CHIME_FRAMES)
     self.assertEqual(round(SUSW_NAG_SD_WINDOW / DT_CTRL), self.WINDOW)
 
@@ -1071,7 +1071,7 @@ class TestSuswNagPrewarning(unittest.TestCase):
     for warning_bits in (1, 2, 3):
       with self.subTest(warning_bits=warning_bits):
         self.setUp()
-        self._feed([0] * 350)
+        self._feed([0] * 300)
         self.assertFalse(any(self._feed([0] * 1000, warning_bits=warning_bits)))
         self.assertEqual(self.nag.quiet, 0.)
 
@@ -1080,24 +1080,26 @@ class TestSuswNagPrewarning(unittest.TestCase):
     for hud_state in (0, 32):
       with self.subTest(hud_state=hud_state):
         self.setUp()
-        self._feed([0] * 350)
+        self._feed([0] * 300)
         self._feed([0], hud_state=hud_state)
         self.assertEqual(self.nag.quiet, 0.)
         chimes = self._feed([0] * 500)
         self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
 
   def test_yellow_hud_states_count_through(self):
-    # 16/20/22/24 count like 12: 3.5 s green then yellow chimes at 4.0 s, in the yellow state
+    # 16/20/22/24 count like 12: green until 0.5 s before the chime time, then yellow; the chime lands
+    # inside the yellow stretch, on the frame the green + yellow count reaches SUSW_NAG_CHIME_TIME
+    green = self.CHIME_FRAMES - 50
     for hud_state in (16, 20, 22, 24):
       with self.subTest(hud_state=hud_state):
         self.setUp()
-        self._feed([0] * 350)
+        self.assertFalse(any(self._feed([0] * green)))
         chimes = self._feed([0] * 100, hud_state=hud_state)
         self.assertEqual([i for i, c in enumerate(chimes) if c], [49])
-        self.assertAlmostEqual(self.nag.quiet, 4.5)
+        self.assertAlmostEqual(self.nag.quiet, (green + 100) * DT_CTRL)
         # back to green: no second chime, the timer keeps running
         self.assertFalse(any(self._feed([0] * 100)))
-        self.assertAlmostEqual(self.nag.quiet, 5.5)
+        self.assertAlmostEqual(self.nag.quiet, (green + 200) * DT_CTRL)
 
     with self.subTest("yellow from a standing start"):
       self.setUp()
@@ -1106,24 +1108,24 @@ class TestSuswNagPrewarning(unittest.TestCase):
 
   def test_yellow_flicker_does_not_restart_the_timer(self):
     # the case the reset-on-every-state rule got wrong: one yellow frame inside a green stretch
-    self._feed([0] * 350)
+    self.assertFalse(any(self._feed([0] * (self.CHIME_FRAMES - 50))))
     self._feed([0], hud_state=20)
-    self.assertAlmostEqual(self.nag.quiet, 3.51)
+    self.assertAlmostEqual(self.nag.quiet, (self.CHIME_FRAMES - 49) * DT_CTRL)
     chimes = self._feed([0] * 100)
     self.assertEqual([i for i, c in enumerate(chimes) if c], [48])
 
   def test_grey_flicker_does_not_restart_the_timer(self):
     # HUD state 2 (grey, no lanes) counts through like yellow: one grey frame inside a green stretch
-    self._feed([0] * 350)
+    self.assertFalse(any(self._feed([0] * (self.CHIME_FRAMES - 50))))
     self._feed([0], hud_state=2)
-    self.assertAlmostEqual(self.nag.quiet, 3.51)
+    self.assertAlmostEqual(self.nag.quiet, (self.CHIME_FRAMES - 49) * DT_CTRL)
     chimes = self._feed([0] * 100)
     self.assertEqual([i for i, c in enumerate(chimes) if c], [48])
 
   def test_grey_stretch_counts_through(self):
     # route 0000025f, the un-chimed nag at 256.0 s: 17 grey LKA_HUD_2 frames (4.25 s at 4 Hz) then 10
     # green (2.5 s), torque never above 19. The timer counts from the start of the grey stretch and the
-    # chime fires at 4.0 s, still grey, 3 s before the car's nag; the green tail does not chime again.
+    # chime fires at SUSW_NAG_CHIME_TIME, still grey, before the car's nag; the green tail does not chime again.
     torque = [(i * 7) % 39 - 19 for i in range(675)]   # |tq| <= 19, SD ~11: calm
     self.assertLessEqual(max(abs(x) for x in torque), 19)
     grey = self._feed(torque[:425], hud_state=2)
@@ -1142,17 +1144,17 @@ class TestSuswNagPrewarning(unittest.TestCase):
                         ("lateral", lambda: self._feed([0], hud_state=20, lat_active=False))):
       with self.subTest(reset=label):
         self.setUp()
-        self._feed([0] * 350)
+        self._feed([0] * 300)
         feed()
         self.assertEqual(self.nag.quiet, 0.)
 
-  def test_chime_exactly_once_at_4_s_when_calm(self):
+  def test_chime_exactly_once_at_chime_time_when_calm(self):
     chimes = self._feed([5] * 2000)
     self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
     self.assertTrue(self.nag.calm)
     self.assertAlmostEqual(self.nag.quiet, 20.0)
 
-    # the chime frame itself reads 4.00 s, calm, chime; its neighbours do not chime
+    # the chime frame itself reads SUSW_NAG_CHIME_TIME, calm, chime; its neighbours do not chime
     self.setUp()
     self._feed([5] * (self.CHIME_FRAMES - 1))
     self.assertFalse(self.nag.chime)
@@ -1171,8 +1173,8 @@ class TestSuswNagPrewarning(unittest.TestCase):
     self.assertFalse(self.nag.calm)
     self.assertGreater(self.nag.torque_sd, SUSW_NAG_SD_CALM)
 
-  def test_chime_waits_for_calm_after_4_s(self):
-    # not calm at 4.0 s: no chime there. Calm arrives as the wiggle (stopped at 2.0 s) drains out of
+  def test_chime_waits_for_calm_after_chime_time(self):
+    # not calm at the chime time: no chime there. Calm arrives as the wiggle (stopped at 2.0 s) drains out of
     # the 3 s window, and the chime fires on the first calm frame, once.
     wiggle_frames = 200
     trace = np.array([40 if i % 2 else -40 for i in range(wiggle_frames)] + [0] * 1000)
@@ -1194,7 +1196,7 @@ class TestSuswNagPrewarning(unittest.TestCase):
         reset()
         self.assertEqual(self.nag.quiet, 0.)
         # after the torque reset the window still holds the two 80s, but their SD over 300 samples is
-        # ~6.5, so calm holds and the second chime is again exactly 4.0 s after the reset
+        # ~6.5, so calm holds and the second chime is again exactly SUSW_NAG_CHIME_TIME after the reset
         second = self._feed([0] * 1000)
         self.assertEqual([i for i, c in enumerate(second) if c], [self.CHIME_FRAMES - 1])
 
@@ -1266,9 +1268,11 @@ class TestSuswNagPrewarningCarState(SuswTestBase):
     self.assertEqual(states[0].nagPrewarning.quiet, 0.)
     self.assertAlmostEqual(states[1].nagPrewarning.quiet, 0.01, places=5)
     chimes = [i for i, CS in enumerate(states) if CS.nagPrewarning.chime]
-    self.assertEqual(chimes, [400])
-    CS = states[400]
-    self.assertAlmostEqual(CS.nagPrewarning.quiet, 4.0, places=5)
+    chime_frame = round(SUSW_NAG_CHIME_TIME / DT_CTRL)
+    self.assertEqual(chime_frame, 350)
+    self.assertEqual(chimes, [chime_frame])
+    CS = states[chime_frame]
+    self.assertAlmostEqual(CS.nagPrewarning.quiet, 3.5, places=5)
     self.assertTrue(CS.nagPrewarning.calm)
     self.assertEqual(CS.nagPrewarning.torqueSd, 0.)
     # the carState fields are what the UI reads: orange wheel = calm and quiet > 0
