@@ -42,10 +42,6 @@ class CarController(CarControllerBase):
     # SUSW is lateral only: no cruise button TX (the buttons are on a bus openpilot cannot write).
     # Its one HUD message is LKA_HUD_2 at the cluster, below.
     susw = self.CP.carFingerprint in SUSW_CARS
-    if susw:
-      # the hands-off nag pre-warning only counts while openpilot is steering; CarState reads this on
-      # its next update (#1854)
-      CS.susw_lat_active = CC.latActive
 
     # VEHICLE BUS TX: LKA_HUD_2 (0x547) on bus 0, replacing the camera's frame at the cluster (#1899).
     # 4 Hz, plus at once when the LaneSense toggle changes: CarState counts a toggle as on for G3 only

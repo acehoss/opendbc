@@ -1,6 +1,5 @@
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
-from opendbc.car.chrysler.nag_prewarn import NagPrewarning
 from opendbc.car.chrysler.values import CUSW_CARS, DBC, STEER_THRESHOLD, SUSW_STEER_THRESHOLD, RAM_CARS, SUSW_CARS
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
@@ -68,11 +67,6 @@ class CarState(CarStateBase):
     self.susw_acc_stale_frames = 0
     self.susw_acc_valid_prev = False
     self.susw_needs_reengage = False
-    # Hands-off nag pre-warning (#1854). susw_lat_active is the CarControl.latActive the controller
-    # last applied, written by CarController.update(): CarState runs first in each card step, so this
-    # is the previous frame's value, 10 ms old.
-    self.susw_nag = NagPrewarning()
-    self.susw_lat_active = False
     # openpilot's LaneSense toggle (#1899). None until known: card seeds it from the persisted Param
     # before the first update, and if there is none yet (the first boot after #1899) it is seeded
     # from the camera's first LKA_HUD_2. susw_lanesense_sent is the toggle as last put on the bus by
@@ -358,15 +352,6 @@ class CarState(CarStateBase):
     ret.buttonEvents = create_button_events(self.susw_button, prev_button, SUSW_BUTTONS)
 
     self.button_counter = cp_fusion.vl["CRUISE_BUTTONS"]["COUNTER"]
-
-    # Hands-off nag pre-warning (#1854): one sample per frame. LKA_HUD_2 is 4 Hz, so its two fields
-    # are the last frame held; before the first frame they read 0, which is not state 12 and resets.
-    self.susw_nag.update(ret.steeringTorque, int(cp_cam.vl["LKA_HUD_2"]["LKA_HUD_STATE"]),
-                         int(cp_cam.vl["LKA_HUD_2"]["LKA_WARNING_BITS"]), self.susw_lat_active)
-    ret.nagPrewarning.quiet = self.susw_nag.quiet
-    ret.nagPrewarning.torqueSd = self.susw_nag.torque_sd
-    ret.nagPrewarning.calm = self.susw_nag.calm
-    ret.nagPrewarning.chime = self.susw_nag.chime
 
     return ret
 
