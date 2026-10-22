@@ -18,7 +18,7 @@ steady-state map; 0-250 counts is the pooled fit over both speed bands (n = 500-
 250 it follows the 25-31 m/s band (n = 100-440 per bin), because the only low-speed data up there is
 one crowned off-ramp held with hands on. The top point is extrapolated. Linear interpolation in
 between; outside the table it clamps, so torque never exceeds 1.0 and curvature never exceeds the
-top of the table.
+top of the table. Below BLEND_LO the feedforward is the linear model instead (see BLEND_LO).
 """
 import numpy as np
 
@@ -32,16 +32,48 @@ _CURV_PER_KM = np.array([0.0, 0.03, 0.06, 0.12, 0.18, 0.28, 0.42, 0.57, 0.69, 0.
 TORQUE_TABLE = _COUNTS / STEER_MAX_COUNTS  # normalised [0, 1], what the controller outputs
 CURVATURE_TABLE = _CURV_PER_KM * 1e-3     # 1/m
 
+# Small-signal blend (#1879, drive 00000266). The static table is the centre of a wide hysteresis band:
+# at low curvature the column holds its angle over a +-100-150 count range of command and only moves
+# when the command leaves the band, so the exact inverse of the table turns the planner's +-0.1 m/s2
+# wander on a straight into a +-120 count wander at 34 mph (vs +-50 for the linear model), which
+# crosses the band, snaps the column 3-5 deg, and hunts. The linear model's small-signal gain stays
+# inside the band. So below BLEND_LO (1/m) the feedforward is the linear model, above BLEND_HI it is
+# the table, smoothstep in between. The problem curve (0.8-1.0 m/s2 at 38 mph) is 2.5-3.1e-3 1/m,
+# pure table; straights (|lat accel| < 0.15 m/s2) are below 0.6e-3 at any speed above 16 m/s.
+BLEND_LO = 0.6e-3
+BLEND_HI = 1.6e-3
+_INVERSE_GRID = 64
+
 
 def _speed(v_ego: float) -> float:
   return max(abs(float(v_ego)), MIN_SPEED)
 
 
+def _blend_weight(curvature: float) -> float:
+  w = float(np.clip((curvature - BLEND_LO) / (BLEND_HI - BLEND_LO), 0.0, 1.0))
+  return w * w * (3.0 - 2.0 * w)
+
+
+def _table_torque(curvature: float) -> float:
+  return float(np.interp(curvature, CURVATURE_TABLE, TORQUE_TABLE))
+
+
 def susw_torque_from_lateral_accel(lateral_acceleration: float, torque_params, v_ego: float) -> float:
-  curvature = abs(float(lateral_acceleration)) / _speed(v_ego) ** 2
-  return float(np.sign(lateral_acceleration) * np.interp(curvature, CURVATURE_TABLE, TORQUE_TABLE))
+  la = abs(float(lateral_acceleration))
+  curvature = la / _speed(v_ego) ** 2
+  w = _blend_weight(curvature)
+  linear = la / float(torque_params.latAccelFactor)
+  table = _table_torque(curvature)
+  # the linear model only ever softens the table (its small-signal gain is lower at town speed); where
+  # it is above the table (highway speed, mid curvature) the table wins, which also keeps this monotone
+  torque = min((1.0 - w) * linear + w * table, table, 1.0)
+  return float(np.sign(lateral_acceleration) * torque)
 
 
 def susw_lateral_accel_from_torque(torque: float, torque_params, v_ego: float) -> float:
-  curvature = np.interp(abs(float(torque)), TORQUE_TABLE, CURVATURE_TABLE)
-  return float(np.sign(torque) * curvature * _speed(v_ego) ** 2)
+  # numeric inverse of the blend at this speed; at |torque| >= 1 it is the top of the table
+  v2 = _speed(v_ego) ** 2
+  la_top = CURVATURE_TABLE[-1] * v2
+  la_grid = np.linspace(0.0, la_top, _INVERSE_GRID)
+  torque_grid = np.array([susw_torque_from_lateral_accel(la, torque_params, v_ego) for la in la_grid])
+  return float(np.sign(torque) * np.interp(abs(float(torque)), torque_grid, la_grid))
