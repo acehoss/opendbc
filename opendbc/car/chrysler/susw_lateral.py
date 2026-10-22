@@ -33,15 +33,47 @@ TORQUE_TABLE = _COUNTS / STEER_MAX_COUNTS  # normalised [0, 1], what the control
 CURVATURE_TABLE = _CURV_PER_KM * 1e-3     # 1/m
 
 
+# Straight-line blend (#1879, drives 00000266 and 0000026f). The table's inverse is steep near zero (833
+# counts per 1e-3 1/m) and the column sits in a hysteresis band there, so on a straight the planner's
+# +-0.1 m/s2 wander became +-120 counts at 34 mph, crossed the band, and hunted (1.2 deg p2p vs 0.3 with
+# the linear model). Below BLEND_LO the feedforward is the linear model, above BLEND_HI the table,
+# smoothstep between, never above the table. The band is deliberately narrow: an earlier 0.6-1.6e-3
+# blend starved lane centering (drive 0000026d, lane wander doubled); lane centering and gentle curves
+# (>= 0.6e-3) stay on the table, and stuck holds there are the stiction compensator's job.
+BLEND_LO = 0.3e-3
+BLEND_HI = 0.6e-3
+_INVERSE_GRID = 64
+
+
 def _speed(v_ego: float) -> float:
   return max(abs(float(v_ego)), MIN_SPEED)
 
 
+def _blend_weight(curvature: float) -> float:
+  w = float(np.clip((curvature - BLEND_LO) / (BLEND_HI - BLEND_LO), 0.0, 1.0))
+  return w * w * (3.0 - 2.0 * w)
+
+
+def _table_torque(curvature: float) -> float:
+  return float(np.interp(curvature, CURVATURE_TABLE, TORQUE_TABLE))
+
+
 def susw_torque_from_lateral_accel(lateral_acceleration: float, torque_params, v_ego: float) -> float:
-  curvature = abs(float(lateral_acceleration)) / _speed(v_ego) ** 2
-  return float(np.sign(lateral_acceleration) * np.interp(curvature, CURVATURE_TABLE, TORQUE_TABLE))
+  la = abs(float(lateral_acceleration))
+  curvature = la / _speed(v_ego) ** 2
+  w = _blend_weight(curvature)
+  linear = la / float(torque_params.latAccelFactor)
+  table = _table_torque(curvature)
+  # the linear model only ever softens the table; where it is above the table (highway speed) the table
+  # wins, which also keeps this monotone
+  torque = min((1.0 - w) * linear + w * table, table, 1.0)
+  return float(np.sign(lateral_acceleration) * torque)
 
 
 def susw_lateral_accel_from_torque(torque: float, torque_params, v_ego: float) -> float:
-  curvature = np.interp(abs(float(torque)), TORQUE_TABLE, CURVATURE_TABLE)
-  return float(np.sign(torque) * curvature * _speed(v_ego) ** 2)
+  # numeric inverse of the blend at this speed; at |torque| >= 1 it is the top of the table
+  v2 = _speed(v_ego) ** 2
+  la_top = CURVATURE_TABLE[-1] * v2
+  la_grid = np.linspace(0.0, la_top, _INVERSE_GRID)
+  torque_grid = np.array([susw_torque_from_lateral_accel(la, torque_params, v_ego) for la in la_grid])
+  return float(np.sign(torque) * np.interp(abs(float(torque)), torque_grid, la_grid))
