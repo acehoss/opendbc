@@ -53,6 +53,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     ("ACC_STATUS_1", 0x103, GATEWAY_BUS, 7, True, {"ACC_ENGAGED": 1}),
     ("CRUISE_BUTTONS", 0x2FA, GATEWAY_BUS, 2, True, {}),
     ("LKA_HUD_2", 0x547, 2, None, False, {}),
+    ("LANESENSE_BUTTON", 0x384, 0, None, False, {}),
   )
 
   def setUp(self):
@@ -66,13 +67,20 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     return self.packer.make_can_msg_safety("ACC_STATUS_1", GATEWAY_BUS, values)
 
   def _lanesense_msg(self, disabled, bus=2):
-    # LKA_HUD_2, the camera's HUD message. LANESENSE_DISABLED is the LaneSense half of G3.
+    # LKA_HUD_2 as the camera sends it. Since #1899 its LANESENSE_DISABLED is not G3 any more.
     values = {"LANESENSE_DISABLED": 1 if disabled else 0}
     return self.packer.make_can_msg_safety("LKA_HUD_2", bus, values)
 
+  def _op_lanesense(self, on):
+    """openpilot's own LKA_HUD_2 on bus 0, the LaneSense half of G3 since #1899."""
+    self.assertTrue(self._tx(self._lka_hud_tx_msg(lanesense_disabled=not on, hud_state=2 if on else 0)))
+
+  def _button_msg_lanesense(self, pressed, bus=0):
+    return self.packer.make_can_msg_safety("LANESENSE_BUTTON", bus, {"LANESENSE_BUTTON": int(pressed)})
+
   def _engage(self):
     """Bring panda up to the full G3 engagement state: LaneSense on and the stock ACC engaged."""
-    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self._op_lanesense(True)
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
 
   def _speed_msg(self, speed):
@@ -423,7 +431,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
 
     # LaneSense off drops controls, but the accepted torque-zero idle stream retains ownership.
-    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    self._op_lanesense(False)
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
     self.assertFalse(self.safety.get_controls_allowed())
 
@@ -484,29 +492,31 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
     self.assertEqual(0, self._run_ramp(too_fast))
     self.assertEqual(0, self._run_ramp([-t for t in too_fast]))
 
-  def _rx_all_checked(self, lanesense=True):
+  def _rx_all_checked(self, skip=None):
     for name, addr, bus, _, _, values in self.RX_CHECKED_MSGS:
-      if lanesense or (addr != 0x547):
+      if addr != skip:
         self.assertTrue(self._rx(self.packer.make_can_msg_safety(name, bus, values)), name)
 
-  def test_lanesense_lag_drops_controls(self):
-    # LKA_HUD_2 is 4 Hz. safety_tick() refuses any check declared below 10 Hz outright, so it is
-    # declared at that floor, which leaves it on the generic 1 s lag threshold: a 250 ms message
-    # clears it with 4x margin, but a camera that goes quiet invalidates the config and drops
-    # controls even while every other checked message keeps arriving.
-    for lanesense_alive in (True, False):
-      with self.subTest(lanesense_alive=lanesense_alive):
+  def test_slow_check_lag_drops_controls(self):
+    # LKA_HUD_2 (the camera, liveness only since #1899) and LANESENSE_BUTTON are 4 Hz. safety_tick()
+    # refuses any check declared below 10 Hz outright, so both are declared at that floor, which
+    # leaves them on the generic 1 s lag threshold: a 250 ms message clears it with 4x margin, but
+    # either one going quiet invalidates the config and drops controls even while every other
+    # checked message keeps arriving.
+    for quiet in (None, 0x547, 0x384):
+      with self.subTest(quiet=quiet):
         self._reset_safety_hooks()
         self.safety.set_timer(0)
         self._rx_all_checked()
-        self.assertTrue(self._rx(self._pcm_status_msg(True)))
+        self._engage()
         self.assertTrue(self.safety.get_controls_allowed())
 
         self.safety.set_timer(int(1.1e6))
-        self._rx_all_checked(lanesense=lanesense_alive)
+        self._op_lanesense(True)
+        self._rx_all_checked(skip=quiet)
         self.safety.safety_tick_current_safety_config()
-        self.assertEqual(lanesense_alive, self.safety.safety_config_valid())
-        self.assertEqual(lanesense_alive, self.safety.get_controls_allowed())
+        self.assertEqual(quiet is None, self.safety.safety_config_valid())
+        self.assertEqual(quiet is None, self.safety.get_controls_allowed())
 
   def test_heartbeat_tx(self):
     # the gateway's opt-in for INTERCEPT: always sendable on the fusion bus, never anywhere else
@@ -547,10 +557,15 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
         fix = flip_byte(0 if checksum_byte is None else checksum_byte)
         bad = self.packer.make_can_msg_safety(name, bus, values, fix_checksum=fix)
         if checksum_byte is None:
-          # ACCEL_PEDAL_DRIVER and LKA_HUD_2 carry neither a checksum nor a counter, they are
+          # ACCEL_PEDAL_DRIVER, LKA_HUD_2 and LANESENSE_BUTTON carry neither a checksum nor a counter, they are
           # rate-only checks: a garbage frame is still accepted and engagement survives it
           self.assertTrue(self._rx(bad))
-          self.assertTrue(self._rx(make_msg(bus, addr, dat=b"\xff" * 8)))
+          # all ones with LANESENSE_BUTTON's own bit (byte 3 bit 6) clear: a set bit there is a press,
+          # which is a kill by design (test_button_*), not a garbage frame
+          garbage = bytearray(b"\xff" * 8)
+          if addr == 0x384:
+            garbage[3] &= 0xBF
+          self.assertTrue(self._rx(make_msg(bus, addr, dat=bytes(garbage))))
           self.assertTrue(self.safety.get_controls_allowed())
         else:
           self.assertFalse(self._rx(bad))
@@ -582,37 +597,37 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
 
   # the two generic cruise tests, with the LaneSense half of G3 satisfied first
   def test_enable_control_allowed_from_cruise(self):
-    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self._op_lanesense(True)
     super().test_enable_control_allowed_from_cruise()
 
   def test_cruise_engaged_prev(self):
-    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self._op_lanesense(True)
     super().test_cruise_engaged_prev()
 
-  def test_no_engagement_before_lanesense_is_seen(self):
-    # fail closed: until the camera has reported LaneSense on, the stock ACC alone may not engage
-    # openpilot, no matter how long it stays engaged
+  def test_no_engagement_before_openpilot_reports_lanesense(self):
+    # fail closed: until openpilot's own LKA_HUD_2 has reported LaneSense on, the stock ACC alone may
+    # not engage openpilot, no matter how long it stays engaged
     for _ in range(10):
       self.assertTrue(self._rx(self._pcm_status_msg(True)))
       self.assertFalse(self.safety.get_controls_allowed())
 
     # and it engages on the first ACC frame after LaneSense turns out to be on
-    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self._op_lanesense(True)
     self.assertFalse(self.safety.get_controls_allowed())
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
     self.assertTrue(self.safety.get_controls_allowed())
 
   def test_no_engagement_with_lanesense_off(self):
-    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    self._op_lanesense(False)
     for _ in range(10):
       self.assertTrue(self._rx(self._pcm_status_msg(True)))
       self.assertFalse(self.safety.get_controls_allowed())
 
   def test_lanesense_off_disengages(self):
-    # LaneSense switched off while the stock ACC stays engaged has to drop controls
+    # openpilot reporting LaneSense off while the stock ACC stays engaged has to drop controls
     self._engage()
     self.assertTrue(self.safety.get_controls_allowed())
-    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    self._op_lanesense(False)
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
     self.assertFalse(self.safety.get_controls_allowed())
 
@@ -624,42 +639,146 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
   def test_lanesense_back_on_reengages(self):
     # a fresh 0 -> 1 edge of (ACC engaged and LaneSense on) re-engages, on the ACC frame
     self._engage()
-    self.assertTrue(self._rx(self._lanesense_msg(True)))
+    self._op_lanesense(False)
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
     self.assertFalse(self.safety.get_controls_allowed())
 
-    self.assertTrue(self._rx(self._lanesense_msg(False)))
+    self._op_lanesense(True)
     self.assertFalse(self.safety.get_controls_allowed())
     self.assertTrue(self._rx(self._pcm_status_msg(True)))
     self.assertTrue(self.safety.get_controls_allowed())
 
-  def test_lanesense_only_from_camera_bus(self):
-    # LKA_HUD_2 is only sampled from the camera side: the same address anywhere else must not be
-    # able to satisfy the LaneSense half of G3, nor to clear it once the camera has set it
-    for bus in (0, GATEWAY_BUS, 3):
+  def test_lanesense_needs_a_live_openpilot_stream(self):
+    # openpilot's LaneSense on counts only while its LKA_HUD_2 stream is live (1 s, like the
+    # forwarding gate): a dead openpilot reads as LaneSense off on the next ACC frame
+    self.safety.set_timer(0)
+    self._engage()
+    self.safety.set_timer(999999)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.set_timer(1000000)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    # back alive: still no engagement without a fresh rising edge of the whole conjunction
+    self._op_lanesense(True)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+    # a refused frame (wrong bus) neither refreshes the stream nor sets the state
+    self._reset_safety_hooks()
+    self.assertFalse(self._tx(self._lka_hud_tx_msg(bus=2)))
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_camera_lanesense_is_ignored(self):
+    # #1899: the camera's LANESENSE_DISABLED (bus 2, or the same address anywhere else) can neither
+    # satisfy G3 nor clear it. Route e7 2157-2162 s: the camera switches itself off ~5 s into an
+    # ignored hands-off warning, which must not disengage openpilot.
+    for bus in (0, GATEWAY_BUS, 2, 3):
       self._reset_safety_hooks()
       self._rx(self._lanesense_msg(False, bus=bus))
       self._rx(self._pcm_status_msg(True))
       self.assertFalse(self.safety.get_controls_allowed(), f"{bus=}")
 
-    for bus in (0, GATEWAY_BUS, 3):
       self._reset_safety_hooks()
       self._engage()
-      self.assertTrue(self.safety.get_controls_allowed(), f"{bus=}")
       self._rx(self._lanesense_msg(True, bus=bus))
       self._rx(self._pcm_status_msg(True))
       self.assertTrue(self.safety.get_controls_allowed(), f"{bus=}")
 
   def test_lanesense_bit_position(self):
-    # LANESENSE_DISABLED is DBC 30|1@0+, byte 3 bit 6: no other bit of LKA_HUD_2 may stand in for
-    # it, and byte 3 bit 6 on its own must be enough
+    # LANESENSE_DISABLED is DBC 30|1@0+, byte 3 bit 6 of openpilot's LKA_HUD_2: no other bit may stand
+    # in for it, and byte 3 bit 6 on its own must be enough
     for i in range(64):
       dat = bytearray(8)
       dat[i // 8] = 1 << (i % 8)
       self._reset_safety_hooks()
-      self.assertTrue(self._rx(make_msg(2, 0x547, dat=bytes(dat))))
+      self.assertTrue(self._tx(make_msg(0, 0x547, dat=bytes(dat))))
       self._rx(self._pcm_status_msg(True))
       self.assertEqual(i != 30, self.safety.get_controls_allowed(), f"{i=}")
+
+  def test_button_edge_drops_controls_at_once(self):
+    # the LaneSense button means openpilot off. Its rising edge drops controls on the button frame
+    # itself, while openpilot's LKA_HUD_2 stream is live and still says LaneSense on, and before any
+    # further ACC frame
+    self._engage()
+    self.assertTrue(self._rx(self._button_msg_lanesense(False)))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self._rx(self._button_msg_lanesense(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    # and it sticks: openpilot's frame still says on and ACC stays engaged, but there is no new
+    # rising edge of the conjunction until openpilot has reported LaneSense off and then on
+    for _ in range(10):
+      self._op_lanesense(True)
+      self.assertTrue(self._rx(self._pcm_status_msg(True)))
+      self.assertFalse(self.safety.get_controls_allowed())
+    self._op_lanesense(False)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self._op_lanesense(True)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_button_held_does_not_retrigger(self):
+    self._engage()
+    self.assertTrue(self._rx(self._button_msg_lanesense(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+    # re-engaged while the button is still held (a 10 s hold on route 000000d8): no second kill
+    self._op_lanesense(False)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self._op_lanesense(True)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self.safety.get_controls_allowed())
+    for _ in range(40):
+      self.assertTrue(self._rx(self._button_msg_lanesense(True)))
+      self.assertTrue(self.safety.get_controls_allowed())
+    # release, then the next press kills again
+    self.assertTrue(self._rx(self._button_msg_lanesense(False)))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self._rx(self._button_msg_lanesense(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_button_press_while_disallowed_is_a_noop(self):
+    # turning LaneSense on is a press too: with controls already off it grants nothing and blocks
+    # nothing, engagement follows openpilot's frame and the ACC edge as usual
+    self._op_lanesense(False)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self._rx(self._button_msg_lanesense(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertTrue(self._rx(self._button_msg_lanesense(False)))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._op_lanesense(True)
+    self.assertTrue(self._rx(self._pcm_status_msg(True)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_button_only_from_the_car_side(self):
+    # the BCM is on bus 0; the same address elsewhere is no press
+    for bus in (GATEWAY_BUS, 2, 3):
+      self._reset_safety_hooks()
+      self._engage()
+      self._rx(self._button_msg_lanesense(False, bus=bus))
+      self._rx(self._button_msg_lanesense(True, bus=bus))
+      self.assertTrue(self.safety.get_controls_allowed(), f"{bus=}")
+
+  def test_button_bit_position(self):
+    # LANESENSE_BUTTON is DBC 30|1@0+, byte 3 bit 6; no other bit of 0x384 is a press
+    for i in range(64):
+      dat = bytearray(8)
+      dat[i // 8] = 1 << (i % 8)
+      self._reset_safety_hooks()
+      self._engage()
+      self.assertTrue(self._rx(make_msg(0, 0x384, dat=bytes(dat))))
+      self.assertEqual(i != 30, self.safety.get_controls_allowed(), f"{i=}")
+
+  def test_button_kill_reinit(self):
+    # a button held through a safety re-init is an edge on its first frame; controls start
+    # disallowed there anyway, and engagement still works once it is released and openpilot is on
+    self.assertTrue(self._rx(self._button_msg_lanesense(True)))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertTrue(self._rx(self._button_msg_lanesense(False)))
+    self._engage()
+    self.assertTrue(self.safety.get_controls_allowed())
 
   def test_no_engagement_from_wrong_bus(self):
     # ACC_STATUS_1 only exists on the gateway bus, the same address on the car buses is ignored
