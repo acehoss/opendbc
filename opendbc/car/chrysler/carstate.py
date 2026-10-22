@@ -73,6 +73,13 @@ class CarState(CarStateBase):
     # is the previous frame's value, 10 ms old.
     self.susw_nag = NagPrewarning()
     self.susw_lat_active = False
+    # openpilot's LaneSense toggle (#1899). None until known: card seeds it from the persisted Param
+    # before the first update, and if there is none yet (the first boot after #1899) it is seeded
+    # from the camera's first LKA_HUD_2. susw_lanesense_sent is the toggle as last put on the bus by
+    # CarController in LKA_HUD_2, which is what the panda's G3 check reads.
+    self.susw_lanesense_on: bool | None = None
+    self.susw_lanesense_sent = False
+    self.susw_lanesense_button_prev: bool | None = None
 
     if CP.carFingerprint in RAM_CARS:
       self.shifter_values = can_define.dv["Transmission_Status"]["Gear_State"]
@@ -291,11 +298,10 @@ class CarState(CarStateBase):
     ret.steerFaultTemporary = bool(cp.vl["EPS_2"]["LKA_FAULT"])
 
     # G3: openpilot engages through the stock ACC controls, and is active only while ACC is engaged
-    # AND LaneSense is on. LaneSense off (or ACC off) means openpilot is inactive and ACC/LaneSense
-    # behave exactly as stock. LANESENSE_DISABLED comes from the camera's own HUD message on bus 2;
-    # until the first one arrives (4 Hz, so up to 250 ms) treat LaneSense as off rather than on.
-    lanesense_disabled = not cp_cam.ts_nanos["LKA_HUD_2"]["LANESENSE_DISABLED"] or \
-                         bool(cp_cam.vl["LKA_HUD_2"]["LANESENSE_DISABLED"])
+    # AND LaneSense is on. Since #1899 "LaneSense on" is openpilot's own toggle, not the camera's: the
+    # camera's hands-off logic switches its LaneSense off by itself after an ignored warning, and the
+    # camera cannot steer while openpilot runs anyway. See update_susw_lanesense().
+    lanesense_on = self.update_susw_lanesense(cp, cp_cam)
 
     # Bus 0 sees only stock frames that reached the EPS. Use that copy to resync at a hand-over;
     # bus 2 stays live while blocked and supplies the camera's control bit for the idle stream.
@@ -339,7 +345,8 @@ class CarState(CarStateBase):
     # transitions at cancel and engage, so anything but 0 means the stock system is available;
     # testing for (1, 2, 5) dropped availability for a frame at every engagement.
     ret.cruiseState.available = acc_valid and cp_fusion.vl["ACC_HUD"]["ACC_STATE"] != 0
-    ret.cruiseState.enabled = acc_valid and acc_engaged and not self.susw_needs_reengage and not lanesense_disabled
+    ret.cruiseState.enabled = acc_valid and acc_engaged and not self.susw_needs_reengage and lanesense_on
+    ret.laneSenseOn = bool(self.susw_lanesense_on)
     ret.cruiseState.speed = cp_fusion.vl["ACC_HUD"]["ACC_SET_SPEED_KPH"] * CV.KPH_TO_MS if acc_valid else 0.
     ret.cruiseState.nonAdaptive = False  # this car has no non-adaptive cruise mode
 
@@ -363,6 +370,34 @@ class CarState(CarStateBase):
 
     return ret
 
+  def update_susw_lanesense(self, cp, cp_cam) -> bool:
+    """openpilot's LaneSense toggle (#1899). Returns the LaneSense half of G3 for this frame.
+
+    The LaneSense button (BCM LANESENSE_BUTTON, bus 0, 1 while held) flips the toggle on its rising
+    edge (the camera itself flips on release, route 000000d8; the press is the earlier of the two). A
+    press with the toggle on turns openpilot off on that same CAN frame. A press with it off turns it
+    on here at once, but G3 only counts it once CarController has put it in LKA_HUD_2
+    (susw_lanesense_sent): CarController sends LKA_HUD_2 in the same step as the change, so this costs
+    one 10 ms frame, and keeps openpilot from engaging ahead of anything that reads that frame.
+
+    The first button frame only primes the edge detector, so a button held through ignition-on or an
+    openpilot restart is not a press. Before the toggle is known (no Param, no camera frame yet) it is
+    off, and presses are ignored.
+    """
+    button = bool(cp.vl["LANESENSE_BUTTON"]["LANESENSE_BUTTON"])
+    pressed = self.susw_lanesense_button_prev is not None and button and not self.susw_lanesense_button_prev
+    if cp.ts_nanos["LANESENSE_BUTTON"]["LANESENSE_BUTTON"]:
+      self.susw_lanesense_button_prev = button
+
+    if self.susw_lanesense_on is None:
+      # first boot after #1899: no persisted toggle yet, take over whatever the camera shows
+      if cp_cam.ts_nanos["LKA_HUD_2"]["LANESENSE_DISABLED"]:
+        self.susw_lanesense_on = not cp_cam.vl["LKA_HUD_2"]["LANESENSE_DISABLED"]
+    elif pressed:
+      self.susw_lanesense_on = not self.susw_lanesense_on
+
+    return bool(self.susw_lanesense_on) and self.susw_lanesense_sent
+
   @staticmethod
   def get_can_parsers(CP):
     if CP.carFingerprint in SUSW_CARS:
@@ -378,6 +413,7 @@ class CarState(CarStateBase):
         ("EPS_2", 100),
         ("DOORS", 2),             # 2 Hz plus on change
         ("STEERING_LEVERS", 4),   # 4 Hz plus on change
+        ("LANESENSE_BUTTON", 4),  # BCM, the LaneSense button, openpilot's toggle since #1899
         ("LKAS_COMMAND", float('nan')),
       ]
       # The gateway copies exactly these three raw CAN C messages onto the private fusion bus, at

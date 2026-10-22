@@ -12,6 +12,9 @@ from opendbc.car.interfaces import CarControllerBase
 # drop (chrysler_susw.h, CHRYSLER_SUSW_RELEASE_*).
 SUSW_RELEASE_RATE = 60
 
+# SUSW LKA_HUD_2 (0x547) period in frames: 4 Hz, the camera's own rate (#1899)
+SUSW_HUD_STEP = 25
+
 
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
@@ -25,6 +28,8 @@ class CarController(CarControllerBase):
     self.heartbeat_counter = 0
     self.lkas_counter = 0
     self.lkas_tx_nanos = 0
+    self.susw_hud_frame = None
+    self.susw_hud_lanesense_on = None
 
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.params = CarControllerParams(CP)
@@ -34,13 +39,27 @@ class CarController(CarControllerBase):
 
     lkas_active = CC.latActive and self.lkas_control_bit_prev
 
-    # SUSW is lateral only: no cruise button TX (the buttons are on a bus openpilot cannot write)
-    # and no HUD TX (the cluster HUD messages have not been decoded or safety validated)
+    # SUSW is lateral only: no cruise button TX (the buttons are on a bus openpilot cannot write).
+    # Its one HUD message is LKA_HUD_2 at the cluster, below.
     susw = self.CP.carFingerprint in SUSW_CARS
     if susw:
       # the hands-off nag pre-warning only counts while openpilot is steering; CarState reads this on
       # its next update (#1854)
       CS.susw_lat_active = CC.latActive
+
+    # VEHICLE BUS TX: LKA_HUD_2 (0x547) on bus 0, replacing the camera's frame at the cluster (#1899).
+    # 4 Hz, plus at once when the LaneSense toggle changes: CarState counts a toggle as on for G3 only
+    # once it is on the bus (susw_lanesense_sent), because that frame is what the panda's G3 reads.
+    # Nothing is sent until the toggle is known; until then the camera's frame keeps the cluster.
+    lanesense_on = CS.susw_lanesense_on if susw else None
+    if lanesense_on is not None:
+      hud_due = self.susw_hud_frame is None or self.frame - self.susw_hud_frame >= SUSW_HUD_STEP
+      if hud_due or lanesense_on != self.susw_hud_lanesense_on:
+        can_sends.append(chryslercan.create_susw_lka_hud(self.packer, lanesense_on, CC.latActive,
+                                                         CC.hudControl.leftLaneDepart, CC.hudControl.rightLaneDepart))
+        self.susw_hud_frame = self.frame
+        self.susw_hud_lanesense_on = lanesense_on
+        CS.susw_lanesense_sent = lanesense_on
 
     # RPGW gateway heartbeat, 10 Hz on the private fusion bus, sent whether or not openpilot is
     # engaged. NOTE: while the platform is dashcamOnly, card.py substitutes the noOutput safety mode

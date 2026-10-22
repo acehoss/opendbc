@@ -67,6 +67,44 @@ def create_lkas_command(packer, CP, apply_torque, lkas_control_bit, counter=None
   return packer.make_can_msg("LKAS_COMMAND", 0, values)
 
 
+# SUSW LKA_HUD_2.LKA_HUD_STATE, the cluster's LaneSense icon (opendbc/dbc/chrysler_susw.dbc)
+SUSW_HUD_OFF = 0             # LaneSense switched off, no icon
+SUSW_HUD_GREY = 2            # LaneSense on, not steering
+SUSW_HUD_GREEN = 12          # LaneSense on and steering
+SUSW_HUD_YELLOW_LEFT = 16    # lane departure, left
+SUSW_HUD_YELLOW_RIGHT = 20   # lane departure, right
+# WARN_BYTE5 reads 64 whenever no warning is shown (99.4 % of route 000000e7, all of 000000ca)
+SUSW_HUD_WARN_BYTE5_IDLE = 64
+
+
+def susw_lka_hud_state(lanesense_on: bool, lat_active: bool, ldw_left: bool, ldw_right: bool) -> int:
+  if not lanesense_on:
+    return SUSW_HUD_OFF
+  if ldw_left:
+    return SUSW_HUD_YELLOW_LEFT
+  if ldw_right:
+    return SUSW_HUD_YELLOW_RIGHT
+  return SUSW_HUD_GREEN if lat_active else SUSW_HUD_GREY
+
+
+def create_susw_lka_hud(packer, lanesense_on: bool, lat_active: bool, ldw_left: bool, ldw_right: bool):
+  # LKA_HUD_2 (0x547) on bus 0, toward the cluster: openpilot replaces the camera's frame (#1899),
+  # so the cluster shows openpilot's LaneSense state and never the camera's hands-off nag or lane
+  # departure warning. Warnings are all cleared: LKA_WARNING_BITS and WARN_BYTE0/1 zero and
+  # WARN_BYTE5 at its no-warning value. Bytes 2, 4 and 7 are zero in every one of the 388,122
+  # camera frames in data/nag (52 routes), so the DBC's unset bits (0) reproduce them.
+  # No counter and no checksum on this frame.
+  values = {
+    "LANESENSE_DISABLED": 0 if lanesense_on else 1,
+    "LKA_HUD_STATE": susw_lka_hud_state(lanesense_on, lat_active, ldw_left, ldw_right),
+    "LKA_WARNING_BITS": 0,
+    "WARN_BYTE0": 0,
+    "WARN_BYTE1": 0,
+    "WARN_BYTE5": SUSW_HUD_WARN_BYTE5_IDLE,
+  }
+  return packer.make_can_msg("LKA_HUD_2", 0, values)
+
+
 def create_cruise_buttons(packer, frame, bus, cancel=False, resume=False):
   values = {
     "ACC_Cancel": cancel,
