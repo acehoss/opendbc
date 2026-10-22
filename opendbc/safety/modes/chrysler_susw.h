@@ -11,8 +11,14 @@
 //   bus 2: CAN CH, camera side
 //
 // Lateral control only, on top of the stock ACC: the vehicle messages openpilot sends are
-// LKAS_COMMAND and the cluster's LaneSense HUD frame LKA_HUD_2 (#1899), and engagement follows ACC_STATUS_1.ACC_ENGAGED off the gateway bus ANDed with
-// LKA_HUD_2.LANESENSE_DISABLED off the camera bus. openpilot is the single LKAS_COMMAND arbiter:
+// LKAS_COMMAND and the cluster's LaneSense HUD frame LKA_HUD_2 (#1899). Engagement (G3) follows
+// ACC_STATUS_1.ACC_ENGAGED off the gateway bus ANDed with LaneSense on, where LaneSense is
+// openpilot's own toggle as shown on the cluster: LANESENSE_DISABLED in openpilot's accepted
+// LKA_HUD_2, counted only while that stream is live. The camera's LANESENSE_DISABLED is no longer
+// read: the camera switches its LaneSense off by itself ~5 s into an ignored hands-off warning, and
+// cannot steer while openpilot runs anyway. Independently of openpilot software, a rising edge of
+// the LaneSense button (BCM, bus 0) drops controls_allowed on that frame. openpilot is the single
+// LKAS_COMMAND arbiter:
 // after its first accepted frame, the stock camera stays blocked while the accepted openpilot
 // stream is live. Stock is forwarded only before that first frame or after the stream is silent
 // for the timeout because openpilot is dead, hung, or refused. With controls disallowed, the
@@ -33,9 +39,12 @@
 // gap in 0x547 is observed on the bench (#1899).
 #define CHRYSLER_SUSW_HUD_TX_TIMEOUT 1000000U
 
-// LKA_HUD_2.LANESENSE_DISABLED, latched from bus 2. Fail closed: openpilot may not steer until the
-// camera has actually reported LaneSense on.
+// LKA_HUD_2.LANESENSE_DISABLED as last accepted from openpilot on bus 0 (#1899). Fail closed:
+// openpilot may not steer until its own frame has reported LaneSense on, and only while that
+// stream is live (CHRYSLER_SUSW_HUD_TX_TIMEOUT).
 static bool chrysler_susw_lanesense_disabled = true;
+// LANESENSE_BUTTON (0x384, bus 0), for the rising-edge kill
+static bool chrysler_susw_lanesense_button_prev = false;
 static uint32_t chrysler_susw_lkas_tx_ts = 0U;
 static bool chrysler_susw_lkas_tx_seen = false;
 static uint32_t chrysler_susw_hud_tx_ts = 0U;
@@ -126,17 +135,21 @@ static safety_config chrysler_susw_init(uint16_t param) {
     // gatewayed from raw CAN C, checked so a dead gateway link also drops controls
     {.msg = {{0x103U, 1, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // ACC_STATUS_1
     {.msg = {{0x2FAU, 1, 4, 50U,  .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},   // CRUISE_BUTTONS
-    // LKA_HUD_2, the camera's HUD message on the camera side. It carries the LaneSense on/off state
-    // that G3 engagement depends on, and the rx hook only ever sees whitelisted messages, so it has
-    // to be listed here. It is a 4 Hz message and safety_tick() rejects any check declared below
-    // 10 Hz outright (frequency < 10U -> rx_checks_invalid), so it is declared at that floor: the
-    // lag threshold is max(timestep * MAX_MISSED_MSGS, 1e6) = 1 s either way, which a 250 ms message
-    // clears with 4x margin while still dropping controls if the camera goes quiet. No counter or
-    // checksum is defined for it.
+    // LKA_HUD_2, the camera's HUD message on the camera side. Since #1899 its content is not read
+    // (G3's LaneSense half is openpilot's own LKA_HUD_2); it stays checked as camera liveness, so a
+    // camera that goes quiet still drops controls. It is a 4 Hz message and safety_tick() rejects
+    // any check declared below 10 Hz outright (frequency < 10U -> rx_checks_invalid), so it is
+    // declared at that floor: the lag threshold is max(timestep * MAX_MISSED_MSGS, 1e6) = 1 s either
+    // way, which a 250 ms message clears with 4x margin. No counter or checksum is defined for it.
     {.msg = {{0x547U, 2, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    // LANESENSE_BUTTON (BCM, car side), for the button kill. Listed because the rx hook only sees
+    // whitelisted messages. 4 Hz plus on change, so declared at the 10 Hz floor like LKA_HUD_2; it
+    // carries neither a counter nor a checksum (bytes 0-2 constant in every capture).
+    {.msg = {{0x384U, 0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
   };
 
   chrysler_susw_lanesense_disabled = true;
+  chrysler_susw_lanesense_button_prev = false;
   chrysler_susw_lkas_tx_ts = 0U;
   chrysler_susw_lkas_tx_seen = false;
   chrysler_susw_hud_tx_ts = 0U;
@@ -146,6 +159,17 @@ static safety_config chrysler_susw_init(uint16_t param) {
   gen_crc_lookup_table_8(0x1DU, chrysler_susw_crc8_lut);
 
   return BUILD_SAFETY_CFG(chrysler_susw_rx_checks, CHRYSLER_SUSW_TX_MSGS);
+}
+
+// True while openpilot's accepted stream of one message is live: one has been accepted, and the
+// last one is younger than the timeout.
+static bool chrysler_susw_op_stream_live(bool seen, uint32_t last_ts, uint32_t timeout) {
+  bool live = false;
+  if (seen) {
+    const uint32_t ts_elapsed = safety_get_ts_elapsed(microsecond_timer_get(), last_ts);
+    live = ts_elapsed < timeout;
+  }
+  return live;
 }
 
 static void chrysler_susw_rx_hook(const CANPacket_t *msg) {
@@ -177,34 +201,35 @@ static void chrysler_susw_rx_hook(const CANPacket_t *msg) {
       // be used here.
       gas_pressed = ((msg->data[0] & 0x0FU) != 0U) || ((msg->data[1] & 0xE0U) != 0U);
     }
-  }
 
-  // LaneSense lives on the camera side only
-  if ((msg->bus == 2U) && (msg->addr == 0x547U)) {
-    // Signal: LKA_HUD_2.LANESENSE_DISABLED, byte 3 bit 6
-    chrysler_susw_lanesense_disabled = GET_BIT(msg, 30U);
+    if (msg->addr == 0x384U) {
+      // Signal: LANESENSE_BUTTON.LANESENSE_BUTTON, byte 3 bit 6, 1 while held. The button means
+      // openpilot off: its rising edge drops controls on this frame, without waiting for openpilot
+      // to report its toggle off. openpilot flips its toggle on the same edge, so a press while
+      // engaged is off on both sides; a press while disallowed changes nothing here.
+      const bool button = GET_BIT(msg, 30U);
+      if (button && !chrysler_susw_lanesense_button_prev) {
+        controls_allowed = false;
+      }
+      chrysler_susw_lanesense_button_prev = button;
+    }
   }
 
   // the stock ACC only exists on raw CAN C, which the gateway copies onto bus 1
   if ((msg->bus == 1U) && (msg->addr == 0x103U)) {
     // Signal: ACC_STATUS_1.ACC_ENGAGED
     const bool cruise_engaged = GET_BIT(msg, 21U);
-    // G3 at the safety boundary: both halves have to hold. pcm_cruise_check() takes care of the
-    // edges, so LaneSense going off drops controls on the next 100 Hz ACC frame and LaneSense
-    // coming back re-engages only on a fresh 0 -> 1 of the conjunction.
-    pcm_cruise_check(cruise_engaged && !chrysler_susw_lanesense_disabled);
+    // G3 at the safety boundary: both halves have to hold. LaneSense is openpilot's own LKA_HUD_2,
+    // and only while that stream is live: a dead openpilot reads as LaneSense off. pcm_cruise_check()
+    // takes care of the edges, so LaneSense going off drops controls on the next 100 Hz ACC frame
+    // and LaneSense coming back re-engages only on a fresh 0 -> 1 of the conjunction. That is also
+    // why a button kill sticks: the conjunction stays high, so there is no new rising edge until
+    // openpilot has reported LaneSense off and then on again.
+    const bool lanesense_on = !chrysler_susw_lanesense_disabled &&
+                              chrysler_susw_op_stream_live(chrysler_susw_hud_tx_seen, chrysler_susw_hud_tx_ts,
+                                                           CHRYSLER_SUSW_HUD_TX_TIMEOUT);
+    pcm_cruise_check(cruise_engaged && lanesense_on);
   }
-}
-
-// True while openpilot's accepted stream of one message is live: one has been accepted, and the
-// last one is younger than the timeout.
-static bool chrysler_susw_op_stream_live(bool seen, uint32_t last_ts, uint32_t timeout) {
-  bool live = false;
-  if (seen) {
-    const uint32_t ts_elapsed = safety_get_ts_elapsed(microsecond_timer_get(), last_ts);
-    live = ts_elapsed < timeout;
-  }
-  return live;
 }
 
 static bool chrysler_susw_fwd_hook(int bus_num, int addr) {
@@ -297,8 +322,11 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
   }
 
   if (msg->addr == 0x547U) {
-    // LKA_HUD_2 is display only and always accepted on its one allowed bus; every accepted frame
-    // refreshes openpilot's ownership of it at the cluster
+    // LKA_HUD_2 is always accepted on its one allowed bus; every accepted frame refreshes
+    // openpilot's ownership of it at the cluster, and its LANESENSE_DISABLED (byte 3 bit 6) is the
+    // LaneSense half of G3. Accepting it whatever it says cannot grant anything by itself:
+    // engagement still needs a fresh rising edge of ACC_ENGAGED && LaneSense on.
+    chrysler_susw_lanesense_disabled = GET_BIT(msg, 30U);
     chrysler_susw_hud_tx_ts = microsecond_timer_get();
     chrysler_susw_hud_tx_seen = true;
   }

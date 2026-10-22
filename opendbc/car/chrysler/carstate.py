@@ -374,11 +374,13 @@ class CarState(CarStateBase):
     """openpilot's LaneSense toggle (#1899). Returns the LaneSense half of G3 for this frame.
 
     The LaneSense button (BCM LANESENSE_BUTTON, bus 0, 1 while held) flips the toggle on its rising
-    edge (the camera itself flips on release, route 000000d8; the press is the earlier of the two). A
-    press with the toggle on turns openpilot off on that same CAN frame. A press with it off turns it
-    on here at once, but G3 only counts it once CarController has put it in LKA_HUD_2
-    (susw_lanesense_sent): CarController sends LKA_HUD_2 in the same step as the change, so this costs
-    one 10 ms frame, and keeps openpilot from engaging ahead of anything that reads that frame.
+    edge (the camera itself flips on release, route 000000d8; the press is the earlier of the two).
+    That is the same edge on which the panda drops controls_allowed (chrysler_susw.h), so a press
+    never leaves the two disagreeing: a press with the toggle on turns openpilot off on both sides on
+    that same CAN frame. A press with it off turns it on here at once, but G3 only counts it once
+    CarController has put it in LKA_HUD_2 (susw_lanesense_sent), because that frame is what the
+    panda's G3 reads. CarController sends LKA_HUD_2 in the same step as the change, so this costs one
+    10 ms frame, and openpilot never engages ahead of the panda.
 
     The first button frame only primes the edge detector, so a button held through ignition-on or an
     openpilot restart is not a press. Before the toggle is known (no Param, no camera frame yet) it is

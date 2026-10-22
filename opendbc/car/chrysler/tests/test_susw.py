@@ -1072,12 +1072,17 @@ class TestSuswHandover(SuswTestBase):
     self.op_counter_prev = None
     self.accepted_op_counters = []
     self.accepted_op_torques = []
+    self.hud_sent = []   # (step, LKA_HUD_2 bytes) for every accepted openpilot LKA_HUD_2
+    self.steps = 0
     # openpilot's LaneSense toggle as the harness drives it with button presses, and whether the
     # controller has put it on the bus yet (SuswTestBase starts it on and sent)
     self.toggle = True
     self.lanesense_sent_prev = True
-    # openpilot has been running: the button edge detector is primed (released), so a first-step press counts
+    # openpilot has been running: the button edge detector is primed (released), so a first-step press
+    # counts, and its LaneSense-on LKA_HUD_2 is already on the bus for the panda's G3
     self.CI.CS.susw_lanesense_button_prev = False
+    self.safety.set_timer(0)
+    self.assertTrue(self.safety.safety_tx_hook(make_msg(0, 0x547, 8, bytes.fromhex(CAM_HUD_FRAMES["grey"]))))
 
   def _step(self, *, acc_engaged: bool, lanesense_on: bool, lat_active: bool, v_ego: float,
             torque: float = 0., brake: bool = False, force_controls_allowed: bool | None = None,
@@ -1089,11 +1094,15 @@ class TestSuswHandover(SuswTestBase):
     self.toggle = lanesense_on
 
     # Pack one physical copy of every safety-checked message, then feed those same bytes to both
-    # layers. LaneSense goes first so its state is current when the 100 Hz ACC frame evaluates G3.
-    # The camera's LKA_HUD_2 carries what openpilot's own frame put on the bus last step, which is the
-    # panda's view of LaneSense since #1899.
+    # layers. The LaneSense button goes first so its kill lands before the 100 Hz ACC frame evaluates
+    # G3. The camera's LKA_HUD_2 always says the opposite of openpilot's: since #1899 neither layer
+    # may read it (the panda's G3 reads openpilot's own LKA_HUD_2, which the controller sends below).
+    button = LANESENSE_BUTTON_PRESSED if press else LANESENSE_BUTTON_RELEASED
+    self.assertTrue(self.safety.safety_rx_hook(make_msg(0, 0x384, 8, bytes.fromhex(button))))
     rx_values = (
-      ("LKA_HUD_2", 2, {"LANESENSE_DISABLED": int(not self.lanesense_sent_prev)}),
+      # the camera self-disabled (LANESENSE_DISABLED 1, HUD 0) while openpilot is on, green while off
+      ("LKA_HUD_2", 2, {"LANESENSE_DISABLED": int(self.lanesense_sent_prev),
+                        "LKA_HUD_STATE": 0 if self.lanesense_sent_prev else 12}),
       ("ABS_3", 0, {"BRAKE_PEDAL_SWITCH": int(brake)}),
       ("ABS_6", 0, {"VEHICLE_SPEED": v_ego}),
       ("EPS_2", 0, {"DRIVER_TORQUE": 0}),
@@ -1109,7 +1118,7 @@ class TestSuswHandover(SuswTestBase):
       packed[name] = dat.hex()
 
     pt = DRIVING | {name: packed[name] for name in ("ABS_3", "ABS_6", "EPS_2", "ACCEL_PEDAL_DRIVER")}
-    pt["LANESENSE_BUTTON"] = LANESENSE_BUTTON_PRESSED if press else LANESENSE_BUTTON_RELEASED
+    pt["LANESENSE_BUTTON"] = button
     adas = {
       "ACC_HUD": HUD_ENGAGED_60 if acc_engaged else HUD_READY,
       "ACC_STATUS_1": packed["ACC_STATUS_1"],
@@ -1118,11 +1127,12 @@ class TestSuswHandover(SuswTestBase):
     CS = self.update(pt, adas, {"LKA_HUD_2": packed["LKA_HUD_2"]})
     if force_controls_allowed is not None:
       self.safety.set_controls_allowed(force_controls_allowed)
-    # G3 on both sides counts LaneSense on only once openpilot's LKA_HUD_2 has said so on the bus
-    lanesense_g3 = self.lanesense_sent_prev
+    # G3 on both sides counts LaneSense on only once openpilot's LKA_HUD_2 has said so on the bus, and
+    # a press that turns it off is off on both sides on the press frame (the panda's button kill)
+    lanesense_g3 = lanesense_on and self.lanesense_sent_prev
     expected_controls = (acc_engaged and lanesense_g3 and not brake) if force_controls_allowed is None else force_controls_allowed
     self.assertEqual(expected_controls, self.safety.get_controls_allowed())
-    self.assertEqual(acc_engaged and lanesense_on and lanesense_g3, CS.cruiseState.enabled)
+    self.assertEqual(acc_engaged and lanesense_g3, CS.cruiseState.enabled)
     self.assertEqual(lanesense_on, CS.laneSenseOn)
 
     CC = structs.CarControl()
@@ -1135,6 +1145,9 @@ class TestSuswHandover(SuswTestBase):
     for addr, dat, bus in can_sends:
       if bus == 0:
         accepted = self.safety.safety_tx_hook(make_msg(bus, addr, len(dat), dat))
+        if addr == 0x547:
+          self.assertTrue(accepted)
+          self.hud_sent.append((self.steps, dat.hex()))
         if (addr == 0x1f6) and accepted:
           accepted_op += 1
           counter = dat[2] & 0xf
@@ -1147,6 +1160,9 @@ class TestSuswHandover(SuswTestBase):
     self.assertEqual(accepted_op, int(expect_accepted))
     self.lanesense_sent_prev = self.CI.CS.susw_lanesense_sent
     stock_forwarded = self.safety.safety_fwd_hook(2, 0x1f6) == 0
+    # openpilot's LKA_HUD_2 is on the bus every step here, so the camera's never reaches the cluster
+    self.assertEqual(self.safety.safety_fwd_hook(2, 0x547), -1)
+    self.steps += 1
     self.t_us += 10000
     return accepted_op + int(stock_forwarded)
 
@@ -1162,11 +1178,47 @@ class TestSuswHandover(SuswTestBase):
   def test_lanesense_changes_have_one_sender(self):
     # the LaneSense button toggles openpilot off, on and off again under an engaged ACC. latActive
     # follows engagement one frame late, as it does through selfdrived.
+    engaged = [self._step(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)]
     off_before = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
     on = [self._step(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)]
     on += self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
     off_after = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
-    self.assertEqual(off_before + on + off_after, [1] * 91)
+    self.assertEqual(engaged + off_before + on + off_after, [1] * 92)
+
+  def test_validation_step_6_button_and_icon(self):
+    # #1899 validation drive, last step: steering engaged, a LaneSense press disengages openpilot on
+    # the press frame on both sides (panda kill, CarState G3) with no mismatch on any frame, and the
+    # cluster icon follows in the same step; a second press brings it back one frame later, again
+    # with the panda and CarState agreeing every frame (asserted inside _step).
+    self._phase(30, acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
+    self.assertEqual(self.hud_sent[-1][1], CAM_HUD_FRAMES["green"])
+    press = self.steps
+    self._step(acc_engaged=True, lanesense_on=False, lat_active=True, v_ego=20.)
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertEqual(self.hud_sent[-1], (press, CAM_HUD_FRAMES["off"]))
+    self._phase(60, acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
+    self.assertTrue(all(dat == CAM_HUD_FRAMES["off"] for step, dat in self.hud_sent if step >= press))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    press = self.steps
+    self._step(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
+    self.assertFalse(self.safety.get_controls_allowed())                     # not on the bus yet
+    self.assertEqual(self.hud_sent[-1], (press, CAM_HUD_FRAMES["grey"]))
+    self._step(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
+    self.assertTrue(self.safety.get_controls_allowed())
+    self._phase(30, acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
+    self.assertEqual(self.hud_sent[-1][1], CAM_HUD_FRAMES["green"])
+
+  def test_camera_self_disable_changes_nothing(self):
+    # route e7 2157-2162 s: ~5 s into an ignored hands-off warning the camera switches its own
+    # LaneSense off (LANESENSE_DISABLED 1, HUD 0) and keeps it off. Neither layer reads that any more:
+    # openpilot stays engaged and steering, the panda stays allowed, the cluster keeps openpilot's frame.
+    # _step feeds exactly that camera frame whenever openpilot's LaneSense is on.
+    self.assertEqual(self._phase(500, acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20., torque=1.),
+                     [1] * 500)
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertEqual(self.accepted_op_torques[-1], 383)
+    self.assertTrue(all(dat == CAM_HUD_FRAMES["green"] for step, dat in self.hud_sent if step > 0))
 
   def test_lanesense_press_while_steering_is_a_release(self):
     # a LaneSense press at the torque cap: openpilot drops engagement on the press frame itself and
