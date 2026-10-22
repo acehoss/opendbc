@@ -3,8 +3,9 @@ from opendbc.car import get_safety_config, structs
 from opendbc.car.chrysler.carcontroller import CarController
 from opendbc.car.chrysler.carstate import CarState
 from opendbc.car.chrysler.radar_interface import RadarInterface
+from opendbc.car.chrysler.susw_lateral import susw_lateral_accel_from_torque, susw_torque_from_lateral_accel
 from opendbc.car.chrysler.values import CAR, CUSW_CARS, RAM_HD, RAM_DT, RAM_CARS, SUSW_CARS, ChryslerFlags, ChryslerSafetyFlags
-from opendbc.car.interfaces import CarInterfaceBase
+from opendbc.car.interfaces import CarInterfaceBase, LateralAccelFromTorqueCallbackType, TorqueFromLateralAccelCallbackType
 
 
 class CarInterface(CarInterfaceBase):
@@ -13,6 +14,18 @@ class CarInterface(CarInterfaceBase):
   RadarInterface = RadarInterface
 
   DRIVABLE_GEARS = (structs.CarState.GearShifter.low,)
+
+  # Fork: the SUSW EPS positions the column as a convex function of the command, speed independent in
+  # curvature. See susw_lateral.py for the measurement (#1879). Other Chrysler platforms stay linear.
+  def torque_from_lateral_accel(self) -> TorqueFromLateralAccelCallbackType:
+    if self.CP.carFingerprint in SUSW_CARS:
+      return susw_torque_from_lateral_accel
+    return self.torque_from_lateral_accel_linear
+
+  def lateral_accel_from_torque(self) -> LateralAccelFromTorqueCallbackType:
+    if self.CP.carFingerprint in SUSW_CARS:
+      return susw_lateral_accel_from_torque
+    return self.lateral_accel_from_torque_linear
 
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:

@@ -115,7 +115,13 @@ legend = ["LAT_ACCEL_FACTOR", "MAX_LAT_ACCEL_MEASURED", "FRICTION"]
 # MAX_LAT_ACCEL_MEASURED is the p99.5 of |lat_accel| while engaged (1.36; 1.52 over the whole
 # route), consistent with the fleet convention for this family (Grand Cherokee 1.41, Pacifica
 # 1.34-1.51). At 1.4 the ISO jerk check leaves STEER_DELTA_UP at 5 (1.83 of 3.0 m/s^3 up).
-"JEEP_RENEGADE" = [1.20, 1.4, 0.23]
+# #1879 (2026-10-22): the SUSW controller no longer uses LAT_ACCEL_FACTOR as its torque map - the
+# EPS is convex and speed independent in curvature, see chrysler/susw_lateral.py. The dead zone is
+# in that map, so FRICTION is nominal: with the map, the old 0.23 (x1.2 in lat-accel space) would
+# have turned into a ~225-count kick at 40 mph; 0.01 is ~30 counts there and ~12 at 65 mph, and is
+# nonzero only because test_car_interfaces requires friction > 0. LAT_ACCEL_FACTOR is kept for the
+# friction scaling and the ISO test; MAX_LAT_ACCEL_MEASURED only feeds the UI torque bar and the ISO test.
+"JEEP_RENEGADE" = [1.20, 1.4, 0.01]
 "ACURA_MDX_4G" = [1.4, 1.4, 0.17]
 "ACURA_RDX_3G_MMR" = [1.5, 1.5, 0.16]
 "ACURA_ADX" = [1.5, 1.5, 0.22]
