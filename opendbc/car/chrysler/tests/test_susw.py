@@ -1026,22 +1026,29 @@ class TestSuswNagPrewarning(unittest.TestCase):
   def test_tunables(self):
     # the five numbers the ticket decided, in values.py only; changing one should be a deliberate edit
     self.assertEqual((SUSW_NAG_RESET_TORQUE, SUSW_NAG_RESET_SAMPLES, SUSW_NAG_CHIME_TIME, SUSW_NAG_SD_WINDOW, SUSW_NAG_SD_CALM),
-                     (60, 2, 3.5, 3.0, 14.))
+                     (60, 4, 3.5, 3.0, 14.))
     self.assertEqual(round(SUSW_NAG_CHIME_TIME / DT_CTRL), self.CHIME_FRAMES)
     self.assertEqual(round(SUSW_NAG_SD_WINDOW / DT_CTRL), self.WINDOW)
 
-  def test_two_consecutive_samples_at_60_reset(self):
-    for first, second in ((60, 60), (-60, -60), (60, -60), (1024, -1024)):
-      with self.subTest(first=first, second=second):
+  def test_four_consecutive_samples_at_60_reset(self):
+    for run in ((60, 60, 60, 60), (-60, -60, -60, -60), (60, -60, 60, -60), (1024, -1024, 77, -64)):
+      with self.subTest(run=run):
         self.setUp()
         self._feed([0] * 300)
         self.assertAlmostEqual(self.nag.quiet, 3.0)
-        self._feed([first])
-        self.assertAlmostEqual(self.nag.quiet, 3.01)   # one sample is not an input yet
-        self._feed([second])
-        self.assertEqual(self.nag.quiet, 0.)          # the second consecutive one resets
+        self._feed(run[:3])
+        self.assertAlmostEqual(self.nag.quiet, 3.03)   # three samples are not an input yet
+        self._feed(run[3:])
+        self.assertEqual(self.nag.quiet, 0.)          # the fourth consecutive one resets
         self._feed([0] * 5)
         self.assertAlmostEqual(self.nag.quiet, 0.05)
+
+  def test_spikes_up_to_three_samples_are_ignored(self):
+    # route 00000265: the car ignored every 2-sample spike (peaks 64-77); 2- and 3-sample runs, separated
+    # by one sample under 60, never reset and the chime still lands on time
+    spikes = [0] * 100 + [77, 64] + [0] + [70, 70, 70] + [59] + [-75, -75, -75] + [0] * 400
+    chimes = self._feed(spikes)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
 
   def test_single_sample_does_not_reset(self):
     self._feed([0] * 100)
@@ -1129,8 +1136,10 @@ class TestSuswNagPrewarning(unittest.TestCase):
     torque = [(i * 7) % 39 - 19 for i in range(675)]   # |tq| <= 19, SD ~11: calm
     self.assertLessEqual(max(abs(x) for x in torque), 19)
     grey = self._feed(torque[:425], hud_state=2)
-    self.assertEqual([i for i, c in enumerate(grey) if c], [self.CHIME_FRAMES - 1])
-    self.assertFalse(any(self._feed(torque[425:])))
+    self.assertFalse(any(grey))                    # grey counts but never chimes
+    self.assertAlmostEqual(self.nag.quiet, 4.25)
+    green = self._feed(torque[425:])
+    self.assertEqual([i for i, c in enumerate(green) if c], [0])   # past the chime time: first armed frame
     self.assertAlmostEqual(self.nag.quiet, 6.75)
 
     # and a 2 s grey stretch in the middle of green counts as if it had stayed green
@@ -1138,8 +1147,38 @@ class TestSuswNagPrewarning(unittest.TestCase):
     chimes = self._feed([0] * 100) + self._feed([0] * 200, hud_state=2) + self._feed([0] * 200)
     self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
 
+  def test_grey_counts_but_never_chimes_or_shows_calm(self):
+    # route 00000265 1599-1632 s: 32 s hands-off, grey throughout, no car nag. The timer and SD keep
+    # running raw, but there is no chime and calm (the orange wheel) is False the whole time.
+    self._feed([0] * 100)
+    for _ in range(3200):
+      self.assertFalse(self.nag.update(0, 2, 0, True))
+      self.assertFalse(self.nag.calm)
+    self.assertAlmostEqual(self.nag.quiet, 33.0)
+    self.assertEqual(self.nag.torque_sd, 0.)
+    # re-armed, already past the chime time and calm: chime on the first armed frame, calm shows again
+    self.assertTrue(self._feed([0])[0])
+    self.assertTrue(self.nag.calm)
+    self.assertFalse(any(self._feed([0] * 500)))
+
+  def test_rearm_from_grey_before_the_chime_time(self):
+    # the 2026-10-21 case: 4 s of grey with lanes lost early in a quiet stretch, then green; the timer
+    # accumulated through grey so it chimes at the chime time counted from the start, not from re-arming
+    chimes = self._feed([0] * 100, hud_state=2) + self._feed([0] * 400)
+    self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
+
+  def test_rearm_from_grey_waits_for_calm(self):
+    # past the chime time in grey, with the hands busy (+-40, under the reset) at the end of it: back in
+    # green the SD is still above 14, so no chime until the wiggle drains out of the window, then once
+    self._feed([0] * 300 + [40 if i % 2 else -40 for i in range(100)], hud_state=2)
+    self.assertGreater(self.nag.torque_sd, SUSW_NAG_SD_CALM)
+    chimes = self._feed([0] * 400)
+    self.assertFalse(chimes[0])
+    self.assertEqual(sum(chimes), 1)
+    self.assertTrue(self.nag.calm)
+
   def test_driver_input_and_warning_reset_in_yellow(self):
-    for label, feed in (("torque", lambda: self._feed([80, 80], hud_state=20)),
+    for label, feed in (("torque", lambda: self._feed([80] * 4, hud_state=20)),
                         ("warning", lambda: self._feed([0], hud_state=20, warning_bits=3)),
                         ("lateral", lambda: self._feed([0], hud_state=20, lat_active=False))):
       with self.subTest(reset=label):
@@ -1185,7 +1224,7 @@ class TestSuswNagPrewarning(unittest.TestCase):
     self.assertEqual([i for i, c in enumerate(chimes) if c], [first_calm])
 
   def test_rearm_after_reset(self):
-    for label, reset in (("torque", lambda: self._feed([80, 80])),
+    for label, reset in (("torque", lambda: self._feed([80] * 4)),
                          ("hud state", lambda: self._feed([0], hud_state=0)),
                          ("warning", lambda: self._feed([0], warning_bits=3)),
                          ("lateral", lambda: self._feed([0], lat_active=False))):
@@ -1195,8 +1234,8 @@ class TestSuswNagPrewarning(unittest.TestCase):
         self.assertEqual(sum(first), 1)
         reset()
         self.assertEqual(self.nag.quiet, 0.)
-        # after the torque reset the window still holds the two 80s, but their SD over 300 samples is
-        # ~6.5, so calm holds and the second chime is again exactly SUSW_NAG_CHIME_TIME after the reset
+        # after the torque reset the window still holds the four 80s, but their SD over 300 samples is
+        # ~9.2, so calm holds and the second chime is again exactly SUSW_NAG_CHIME_TIME after the reset
         second = self._feed([0] * 1000)
         self.assertEqual([i for i, c in enumerate(second) if c], [self.CHIME_FRAMES - 1])
 
@@ -1279,6 +1318,14 @@ class TestSuswNagPrewarningCarState(SuswTestBase):
     self.assertFalse(states[1].nagPrewarning.calm)   # window not yet full
     self.assertTrue(states[299].nagPrewarning.calm and states[299].nagPrewarning.quiet > 0)
 
+  def test_grey_logs_raw_quiet_but_not_calm(self):
+    states = [self._frame(lat_active=True, hud_state=2) for _ in range(600)]
+    self.assertAlmostEqual(states[-1].nagPrewarning.quiet, 5.99, places=5)
+    self.assertEqual(states[-1].nagPrewarning.torqueSd, 0.)
+    self.assertFalse(any(CS.nagPrewarning.calm or CS.nagPrewarning.chime for CS in states))
+    CS = self._frame(lat_active=True)
+    self.assertTrue(CS.nagPrewarning.chime and CS.nagPrewarning.calm)
+
   def test_not_counting_without_lateral_or_outside_state_12(self):
     for kwargs in ({"lat_active": False}, {"lat_active": True, "hud_state": 0},
                    {"lat_active": True, "hud_state": 32}, {"lat_active": True, "warning_bits": 3}):
@@ -1290,7 +1337,8 @@ class TestSuswNagPrewarningCarState(SuswTestBase):
   def test_driver_torque_reset_through_the_parser(self):
     for _ in range(300):
       self._frame(lat_active=True)
-    self._frame(lat_active=True, torque=-75)
+    for _ in range(3):
+      self._frame(lat_active=True, torque=-75)
     self.assertGreater(self.CI.CS.out.nagPrewarning.quiet, 2.9)
     CS = self._frame(lat_active=True, torque=-75)
     self.assertEqual(CS.steeringTorque, -75)
