@@ -25,11 +25,14 @@ def flip_byte(index):
 
 
 class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTest):
-  TX_MSGS = [[0x1F6, 0], [0x5F0, 1]]
+  TX_MSGS = [[0x1F6, 0], [0x547, 0], [0x5F0, 1]]
   STANDSTILL_THRESHOLD = 0
-  RELAY_MALFUNCTION_ADDRS = {0: (0x1F6,)}
-  # nothing is blocked statically: the stock camera's LKAS_COMMAND is blocked only while openpilot's
-  # accepted stream is live, which chrysler_susw_fwd_hook() decides, see test_stock_lkas_command_forwarding
+  # the camera is the only stock sender of both, on bus 2, so either one heard on bus 0 means the
+  # relay is closed
+  RELAY_MALFUNCTION_ADDRS = {0: (0x1F6, 0x547)}
+  # nothing is blocked statically: the stock camera's LKAS_COMMAND and LKA_HUD_2 are blocked only
+  # while openpilot's accepted stream of the same message is live, which chrysler_susw_fwd_hook()
+  # decides, see test_stock_lkas_command_forwarding and test_lka_hud_forwarding
   FWD_BLACKLISTED_ADDRS: dict[int, list[int]] = {}
   FWD_BUS_LOOKUP = {0: 2, 2: 0}
 
@@ -117,10 +120,112 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
           self.safety.set_controls_allowed(controls_allowed)
           self.assertFalse(self._tx(self.packer.make_can_msg_safety("CRUISE_BUTTONS", bus, values)))
 
-  def test_lka_hud_forwarded(self):
-    # LKA_HUD_2 is the camera's cluster message, it is not blocked in either direction
+  def _lka_hud_tx_msg(self, bus=0, lanesense_disabled=False, hud_state=12):
+    # openpilot's own LKA_HUD_2 for the cluster (#1899)
+    values = {"LANESENSE_DISABLED": int(lanesense_disabled), "LKA_HUD_STATE": hud_state, "WARN_BYTE5": 64}
+    return self.packer.make_can_msg_safety("LKA_HUD_2", bus, values)
+
+  def test_lka_hud_tx(self):
+    # display only: accepted on bus 0 whatever the engagement state and content, nowhere else
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      for disabled in (False, True):
+        for hud_state in (0, 2, 12, 16, 20):
+          self.assertTrue(self._tx(self._lka_hud_tx_msg(lanesense_disabled=disabled, hud_state=hud_state)))
+      for bus in (1, 2, 3):
+        self.assertFalse(self._tx(self._lka_hud_tx_msg(bus=bus)), f"{bus=}")
+      # the allow-list entry is 8 bytes
+      for length in (4, 7):
+        self.assertFalse(self._tx(make_msg(0, 0x547, length)), f"{length=}")
+    self.safety.set_relay_malfunction(True)
+    self.assertFalse(self._tx(self._lka_hud_tx_msg()))
+
+  def test_lka_hud_forwarding(self):
+    # Until openpilot's own LKA_HUD_2 has been accepted, the camera's reaches the cluster. After that
+    # the camera's copy stays blocked while openpilot's stream is live, regardless of controls.
+    for controls_allowed in (False, True):
+      with self.subTest(controls_allowed=controls_allowed):
+        self._reset_safety_hooks()
+        self.safety.set_controls_allowed(controls_allowed)
+        self.safety.set_timer(0)
+        self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x547))
+        self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x547))   # other direction never blocked
+        self.assertTrue(self._tx(self._lka_hud_tx_msg()))
+        self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x547))
+        self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x547))
+
+  def test_lka_hud_forwarding_timeout(self):
+    # openpilot's frame is 4 Hz: its stream is live for 1 s after the last accepted frame, then the
+    # camera's frame is forwarded again, so a dead openpilot hands the cluster back to the camera
+    self.safety.set_timer(0)
+    self.assertTrue(self._tx(self._lka_hud_tx_msg()))
+    for t_us, forwarded in ((250000, -1), (999999, -1), (1000000, 0), (1500000, 0)):
+      with self.subTest(t_us=t_us):
+        self.safety.set_timer(t_us)
+        self.assertEqual(forwarded, self.safety.safety_fwd_hook(2, 0x547))
+
+    # every accepted frame refreshes it
+    for t_us in range(1500000, 4000000, 250000):
+      self.safety.set_timer(t_us)
+      self.assertTrue(self._tx(self._lka_hud_tx_msg()))
+      self.safety.set_timer(t_us + 249999)
+      self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x547))
+
+  def test_lka_hud_rejected_tx_does_not_refresh(self):
+    # a frame refused by the allow-list (wrong bus) cannot take or keep the cluster
+    self.safety.set_timer(0)
+    self.assertFalse(self._tx(self._lka_hud_tx_msg(bus=2)))
     self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x547))
-    self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x547))
+    self.assertTrue(self._tx(self._lka_hud_tx_msg()))
+    self.safety.set_timer(900000)
+    self.assertFalse(self._tx(self._lka_hud_tx_msg(bus=1)))
+    self.safety.set_timer(1000000)
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x547))
+
+  def test_lka_hud_and_lkas_command_streams_are_independent(self):
+    # each message's stock copy is gated on openpilot's stream of that same message only
+    self.safety.set_timer(0)
+    self.assertTrue(self._tx(self._lka_hud_tx_msg()))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x547))
+
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x547))
+
+    # LKAS_COMMAND times out at 50 ms, LKA_HUD_2 at 1 s
+    self.assertTrue(self._tx(self._lka_hud_tx_msg()))
+    self.safety.set_timer(50000)
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1F6))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x547))
+
+  def test_reinit_clears_lka_hud_stream(self):
+    self.safety.set_timer(0)
+    self.assertTrue(self._tx(self._lka_hud_tx_msg()))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x547))
+    self._reset_safety_hooks()
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x547))
+
+  def test_relay_malfunction_lkas_command_unchanged(self):
+    # LKAS_COMMAND keeps its relay check: heard on bus 0 it latches relay_malfunction, which blocks
+    # every TX (both of openpilot's vehicle messages) and all forwarding; on bus 2 it is the camera
+    # and nothing happens. LKA_HUD_2 joins it on bus 0 only.
+    for addr in (0x1F6, 0x547):
+      for bus, malfunction in ((0, True), (2, False), (GATEWAY_BUS, False)):
+        with self.subTest(addr=hex(addr), bus=bus):
+          self.setUp()   # init_tests() is past the relay's 1 s transition window, a bare re-init is not
+          self.safety.set_relay_malfunction(False)
+          self._rx(make_msg(bus, addr, 8))
+          self.assertEqual(malfunction, self.safety.get_relay_malfunction())
+          if malfunction:
+            self.safety.set_controls_allowed(True)
+            self.assertFalse(self._tx(self._torque_cmd_msg(0)))
+            self.assertFalse(self._tx(self._lka_hud_tx_msg()))
+            self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x1F6))
+            self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x547))
 
   def _release_from(self, torque):
     # get an accepted non-zero command on the wire while controls are allowed, then drop controls

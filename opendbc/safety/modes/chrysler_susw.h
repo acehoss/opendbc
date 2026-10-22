@@ -10,25 +10,36 @@
 //          nothing is ever forwarded to or from this bus
 //   bus 2: CAN CH, camera side
 //
-// Lateral control only, on top of the stock ACC: the only vehicle message openpilot sends is
-// LKAS_COMMAND, and engagement follows ACC_STATUS_1.ACC_ENGAGED off the gateway bus ANDed with
+// Lateral control only, on top of the stock ACC: the vehicle messages openpilot sends are
+// LKAS_COMMAND and the cluster's LaneSense HUD frame LKA_HUD_2 (#1899), and engagement follows ACC_STATUS_1.ACC_ENGAGED off the gateway bus ANDed with
 // LKA_HUD_2.LANESENSE_DISABLED off the camera bus. openpilot is the single LKAS_COMMAND arbiter:
 // after its first accepted frame, the stock camera stays blocked while the accepted openpilot
 // stream is live. Stock is forwarded only before that first frame or after the stream is silent
 // for the timeout because openpilot is dead, hung, or refused. With controls disallowed, the
 // lateral checks accept only torque-zero commands, so the idle stream cannot actuate. Its failure
 // mode is no LKAS assist from either source, not unexpected actuation.
+// LKA_HUD_2 at the cluster follows the same single-sender rule: once openpilot's own frame has
+// been accepted, the camera's copy stays blocked while openpilot's stream is live, and comes back
+// within CHRYSLER_SUSW_HUD_TX_TIMEOUT if openpilot stops sending it.
 
 // Provisional: 5 frames at 100 Hz. This is the hole the EPS sees when openpilot goes silent or is
 // refused before stock is forwarded again. The final value comes from the M4 parked-EPS measurement
 // of how long a 0x1F6 gap the EPS tolerates (AH-148).
 #define CHRYSLER_SUSW_LKAS_TX_TIMEOUT 50000U
 
+// LKA_HUD_2 is a 4 Hz frame (camera and openpilot alike), so its stream counts as live for 1 s:
+// up to three late or missing frames are tolerated, and a dead openpilot hands the cluster back to
+// the camera after at most 1 s without its frame. Provisional until the cluster's tolerance of a
+// gap in 0x547 is observed on the bench (#1899).
+#define CHRYSLER_SUSW_HUD_TX_TIMEOUT 1000000U
+
 // LKA_HUD_2.LANESENSE_DISABLED, latched from bus 2. Fail closed: openpilot may not steer until the
 // camera has actually reported LaneSense on.
 static bool chrysler_susw_lanesense_disabled = true;
 static uint32_t chrysler_susw_lkas_tx_ts = 0U;
 static bool chrysler_susw_lkas_tx_seen = false;
+static uint32_t chrysler_susw_hud_tx_ts = 0U;
+static bool chrysler_susw_hud_tx_seen = false;
 
 // Bounded torque release after a disengage. The EPS faults on a torque cliff: every disengage it
 // survived cut <= 205 counts to zero in one frame, both faults (routes 00000133 t=2622.8 and
@@ -95,6 +106,11 @@ static safety_config chrysler_susw_init(uint16_t param) {
     // chrysler_susw_fwd_hook() can gate it on the accepted openpilot stream; relay malfunction
     // detection is unaffected, it only keys off .check_relay in the rx path.
     {0x1F6U, 0, 4, .check_relay = true, .disable_static_blocking = true},
+    // LKA_HUD_2, the cluster's LaneSense icon, LaneSense state and LKA warnings (#1899). Same
+    // dynamic blocking as LKAS_COMMAND. The camera is its only stock sender and sits on bus 2, so
+    // the frame on bus 0 means the relay is closed, exactly like LKAS_COMMAND. The cluster is the
+    // only reader; the EPS never reads it.
+    {0x547U, 0, 8, .check_relay = true, .disable_static_blocking = true},
     // COMMA_HEARTBEAT, on the private fusion bus only. This is the gateway's opt-in for
     // INTERCEPT, so it has to be sendable whether or not controls are allowed, and it is not a
     // vehicle message, so there is no stock ECU to check the relay against.
@@ -123,6 +139,8 @@ static safety_config chrysler_susw_init(uint16_t param) {
   chrysler_susw_lanesense_disabled = true;
   chrysler_susw_lkas_tx_ts = 0U;
   chrysler_susw_lkas_tx_seen = false;
+  chrysler_susw_hud_tx_ts = 0U;
+  chrysler_susw_hud_tx_seen = false;
   chrysler_susw_lkas_torque_last = 0;
   chrysler_susw_release_frames = 0U;
   gen_crc_lookup_table_8(0x1DU, chrysler_susw_crc8_lut);
@@ -178,18 +196,32 @@ static void chrysler_susw_rx_hook(const CANPacket_t *msg) {
   }
 }
 
+// True while openpilot's accepted stream of one message is live: one has been accepted, and the
+// last one is younger than the timeout.
+static bool chrysler_susw_op_stream_live(bool seen, uint32_t last_ts, uint32_t timeout) {
+  bool live = false;
+  if (seen) {
+    const uint32_t ts_elapsed = safety_get_ts_elapsed(microsecond_timer_get(), last_ts);
+    live = ts_elapsed < timeout;
+  }
+  return live;
+}
+
 static bool chrysler_susw_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 
   if ((bus_num == 2) && (addr == 0x1F6)) {
     // openpilot owns LKAS_COMMAND while its accepted stream is live. A refused command cannot
     // refresh ownership; stock returns after the last accepted frame reaches the timeout.
-    bool op_stream_live = false;
-    if (chrysler_susw_lkas_tx_seen) {
-      const uint32_t ts_elapsed = safety_get_ts_elapsed(microsecond_timer_get(), chrysler_susw_lkas_tx_ts);
-      op_stream_live = ts_elapsed < CHRYSLER_SUSW_LKAS_TX_TIMEOUT;
-    }
-    block_msg = op_stream_live;
+    block_msg = chrysler_susw_op_stream_live(chrysler_susw_lkas_tx_seen, chrysler_susw_lkas_tx_ts,
+                                             CHRYSLER_SUSW_LKAS_TX_TIMEOUT);
+  }
+
+  if ((bus_num == 2) && (addr == 0x547)) {
+    // and LKA_HUD_2 at the cluster, the same way: the camera's frame is back as soon as
+    // openpilot's has been missing for the timeout
+    block_msg = chrysler_susw_op_stream_live(chrysler_susw_hud_tx_seen, chrysler_susw_hud_tx_ts,
+                                             CHRYSLER_SUSW_HUD_TX_TIMEOUT);
   }
 
   return block_msg;
@@ -262,6 +294,13 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
       chrysler_susw_lkas_tx_ts = microsecond_timer_get();
       chrysler_susw_lkas_tx_seen = true;
     }
+  }
+
+  if (msg->addr == 0x547U) {
+    // LKA_HUD_2 is display only and always accepted on its one allowed bus; every accepted frame
+    // refreshes openpilot's ownership of it at the cluster
+    chrysler_susw_hud_tx_ts = microsecond_timer_get();
+    chrysler_susw_hud_tx_seen = true;
   }
 
   return tx;
