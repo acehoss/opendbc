@@ -2,18 +2,23 @@
 
 The Renegade's cluster blares a hands-off nag (LKA_HUD_2.LKA_WARNING_BITS 0 -> 3 while LKA_HUD_STATE
 is 12). Across 73 captured nags the only separating information on the bus is EPS_2.DRIVER_TORQUE,
-and the working model is a ~5.3 s timer that resets on a driver input of >= 60 counts for 2
-consecutive samples and fires only while the torque has also been calm. This tracker mirrors that
+and the working model is a ~5.3 s timer that resets on a driver input of >= 60 counts held for
+SUSW_NAG_RESET_SAMPLES consecutive samples and fires only while the torque has also been calm. This tracker mirrors that
 model so openpilot can chime first:
 
-  quiet  seconds since the last reset. A reset is a driver input (the 2-sample rule), a nonzero
-         warning, openpilot lateral inactive, or LKA_HUD_STATE 0 (LaneSense off) or 32 (fault
-         display). It counts in every other state: 12 green, 2 grey, 16/20/22/24 yellow.
+  quiet  seconds since the last reset. A reset is a driver input (the SUSW_NAG_RESET_SAMPLES rule),
+         a nonzero warning, openpilot lateral inactive, or LKA_HUD_STATE 0 (LaneSense off) or 32
+         (fault display). It counts in every other state: 12 green, 2 grey, 16/20/22/24 yellow.
+         Logged raw, whatever the HUD state.
   sd     sample standard deviation (ddof=1, as pandas rolling().std() in the analysis) of
          DRIVER_TORQUE over the last SUSW_NAG_SD_WINDOW seconds, every sample, whatever the gate.
-  calm   sd < SUSW_NAG_SD_CALM over a full window. Never calm before the window has filled.
-  chime  one-sample pulse: the first sample of a counting stretch with quiet >= SUSW_NAG_CHIME_TIME
-         while calm. It then stays disarmed until the next reset. If the torque is not calm at
+  calm   sd < SUSW_NAG_SD_CALM over a full window (never before it has filled) AND the camera is
+         armed (12/16/20/22/24). The output, which drives the logged flag and the orange wheel, is
+         False while grey; the chime gate uses the raw SD test, so grey only defers it.
+  chime  one-sample pulse: the first armed sample of a counting stretch with quiet >=
+         SUSW_NAG_CHIME_TIME and calm. It then stays disarmed until the next reset. Grey (2) keeps
+         the timer counting but never chimes: back in an armed state already past the chime time
+         and calm, it chimes on the first armed sample. If the torque is not calm at
          the chime time it waits for calm and fires when it arrives, still before any reset. That
          is the analysis' rule (first moment both hold); chiming only if calm on the exact chime-time
          sample warned 44 of 73 corpus nags instead of 58 (at 4.0 s, before the HUD-state fixes).
@@ -30,13 +35,17 @@ from opendbc.car.chrysler.values import (SUSW_NAG_CHIME_TIME, SUSW_NAG_RESET_SAM
 
 # LKA_HUD_2.LKA_HUD_STATE: the timer counts in 12 (LaneSense green/armed, the state the hands-off nag
 # fires in), through 2 (grey, no lanes) and through the yellow lane-departure / intervention displays
-# 16/20/22/24, and the chime may fire in any of them. Only 0 (LaneSense off) and 32 (fault display)
-# reset. The car's own timer runs through yellow (11 of the 73 corpus nags had a 16/20 frame in the
+# 16/20/22/24. Only 0 (LaneSense off) and 32 (fault display) reset. The chime and the calm output
+# (orange wheel) are armed states only: route 00000265 1599-1632 s was 32 s hands-off on an unmarked
+# road, grey with the camera control bit 0 throughout, no car nag, yet the chime fired and the wheel
+# was orange for 30 s. Grey still has to count: on 2026-10-21 a nag came 2.5 s after re-arming from
+# 4 s of grey. The car's own timer runs through yellow (11 of the 73 corpus nags had a 16/20 frame in the
 # 6 s before them) and through grey: on route 0000025f four of the five un-chimed nags had a 2-4 s
 # grey stretch in the 5 s before them (nag at 256.0 s: 17 grey frames then 10 green, torque never
 # above 19). Decided on #1854: reset on every state != 12 warned 58/73 corpus nags, holding through
 # yellow 61/73, counting through yellow 66/73.
-LKA_HUD_STATES_COUNTING = (2, 12, 16, 20, 22, 24)
+LKA_HUD_STATES_ARMED = (12, 16, 20, 22, 24)
+LKA_HUD_STATES_COUNTING = (2,) + LKA_HUD_STATES_ARMED
 
 
 class RollingStd:
@@ -103,7 +112,9 @@ class NagPrewarning:
     self._torque_run = self._torque_run + 1 if abs(torque) >= SUSW_NAG_RESET_TORQUE else 0
 
     self.torque_sd = self._sd.update(torque)
-    self.calm = self._sd.full and self.torque_sd < SUSW_NAG_SD_CALM
+    camera_armed = hud_state in LKA_HUD_STATES_ARMED
+    calm = self._sd.full and self.torque_sd < SUSW_NAG_SD_CALM
+    self.calm = calm and camera_armed
 
     reset = (self._torque_run >= SUSW_NAG_RESET_SAMPLES or warning_bits != 0 or not lat_active or
              hud_state not in LKA_HUD_STATES_COUNTING)
@@ -113,7 +124,7 @@ class NagPrewarning:
     else:
       self.quiet_frames += 1
 
-    self.chime = self._armed and self.calm and self.quiet_frames >= self._chime_frames
+    self.chime = self._armed and camera_armed and calm and self.quiet_frames >= self._chime_frames
     if self.chime:
       self._armed = False
     return self.chime
