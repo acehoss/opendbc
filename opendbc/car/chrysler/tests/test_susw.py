@@ -25,7 +25,7 @@ GearShifter = structs.CarState.GearShifter
 PT_ADDRS = {"EPS_1": 0xde, "ABS_1": 0xee, "ABS_3": 0xfa, "ENGINE_1": 0xfc,
             "ABS_6": 0x101, "EPS_2": 0x106, "ACCEL_PEDAL_DRIVER": 0x1f0,
             "SEATBELT_STATUS": 0x257, "DOORS": 0x4b1, "GEAR_2": 0x5a9,
-            "STEERING_LEVERS": 0x73e, "LKAS_COMMAND": 0x1f6}
+            "STEERING_LEVERS": 0x73e, "LKAS_COMMAND": 0x1f6, "LANESENSE_BUTTON": 0x384}
 ADAS_ADDRS = {"ACC_STATUS_1": 0x103, "CRUISE_BUTTONS": 0x2fa, "ACC_HUD": 0x73c}
 CAM_ADDRS = {"LKA_HUD_2": 0x547, "LKAS_COMMAND": 0x1f6}
 
@@ -46,6 +46,7 @@ DRIVING = {
   "GEAR_2": "000c800000000000",            # D, parking brake released
   "DOORS": "0000000000000000",
   "STEERING_LEVERS": "00000000",
+  "LANESENSE_BUTTON": "081da60800000000",   # route 000000d8 t=69.53, button released
 }
 
 # Isolated parked body-state sweep
@@ -109,6 +110,22 @@ PEDAL_BARELY_PRESSED = "0020000000000000"  # t=566.8, 0.408 %, one count
 LANESENSE_ON_GREY = "0000000000400200"     # LaneSense on, no lanes acquired
 LANESENSE_ON_GREEN = "0000000000400c00"    # LaneSense on, lanes acquired and armed
 LANESENSE_OFF = "0000004000400000"         # LaneSense switched off (route 00000003 t=196.5)
+
+# The camera's own LKA_HUD_2 frames from route 00000003 at 0.36 / 538.48 / 597.23 / 544.23 / 196.53 s.
+# openpilot's LKA_HUD_2 (#1899) has to reproduce these byte for byte: grey, green, yellow left / right,
+# LaneSense off (the last is LANESENSE_OFF above).
+CAM_HUD_FRAMES = {
+  "grey": "0000000000400200",
+  "green": "0000000000400c00",
+  "yellow_left": "0000000000401000",
+  "yellow_right": "0000000000401400",
+  "off": "0000004000400000",
+}
+
+# 0x384 LANESENSE_BUTTON (BCM, bus 0), byte 3 bit 6 while held: route 000000d8 press at t=69.36 and
+# release at t=69.53. The frame is 4 Hz plus on change, so a 70-170 ms press shows as its own frames.
+LANESENSE_BUTTON_PRESSED = "081da64800000000"
+LANESENSE_BUTTON_RELEASED = "081da60800000000"
 
 # a real stock camera LKAS_COMMAND from bus 2: disarmed, zero torque, COUNTER 14
 STOCK_LKAS_C14 = "80000e97"
@@ -199,6 +216,11 @@ class SuswTestBase(unittest.TestCase):
     self.CP = CarInterface.get_non_essential_params(CAR.JEEP_RENEGADE)
     self.CI = CarInterface(self.CP)
     self.nanos = 0
+    # openpilot's LaneSense toggle (#1899) on and already on the bus, which is how card leaves it on a
+    # normal boot (Param SuswLaneSenseOn = True) once CarController has sent its first LKA_HUD_2. The
+    # toggle's own tests start from None, the first boot after #1899.
+    self.CI.CS.susw_lanesense_on = True
+    self.CI.CS.susw_lanesense_sent = True
 
   def update(self, pt: dict | None = None, adas: dict | None = None, cam: dict | None = None,
              nanos: int | None = None) -> structs.CarState:
@@ -392,18 +414,27 @@ class TestSuswCarState(SuswTestBase):
         self.assertFalse(CS.cruiseState.nonAdaptive)
 
   def test_engagement_needs_lanesense(self):
-    # G3: openpilot is active only while ACC is engaged AND LaneSense is on
+    # G3: openpilot is active only while ACC is engaged AND LaneSense is on. Since #1899 LaneSense is
+    # openpilot's own toggle, as last put on the bus in LKA_HUD_2; the camera's LANESENSE_DISABLED is
+    # ignored either way.
     engaged = {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}
     cases = (
-      (LANESENSE_ON_GREY, True),
-      (LANESENSE_ON_GREEN, True),
-      (LANESENSE_OFF, False),
+      # toggle, sent, camera frame, enabled
+      (True, True, LANESENSE_ON_GREEN, True),
+      (True, True, LANESENSE_OFF, True),        # the camera switched itself off: no effect
+      (False, False, LANESENSE_ON_GREEN, False),
+      (False, True, LANESENSE_ON_GREEN, False),  # turned off by a press, not yet on the bus: off at once
+      (True, False, LANESENSE_ON_GREEN, False),  # turned on by a press, not yet on the bus: wait a frame
+      (None, False, None, False),               # not known yet (first boot, no camera frame): off
     )
-    for hud, enabled in cases:
-      with self.subTest(hud=hud):
+    for toggle, sent, hud, enabled in cases:
+      with self.subTest(toggle=toggle, sent=sent, hud=hud):
         self.setUp()
-        CS = self.update(DRIVING, engaged, {"LKA_HUD_2": hud})
+        self.CI.CS.susw_lanesense_on = toggle
+        self.CI.CS.susw_lanesense_sent = sent
+        CS = self.update(DRIVING, engaged, {"LKA_HUD_2": hud} if hud else None)
         self.assertEqual(CS.cruiseState.enabled, enabled)
+        self.assertEqual(CS.laneSenseOn, bool(toggle))
         # availability is the stock ACC state and is unaffected by LaneSense
         self.assertTrue(CS.cruiseState.available)
 
@@ -411,10 +442,6 @@ class TestSuswCarState(SuswTestBase):
     self.setUp()
     CS = self.update(DRIVING, engaged | {"ACC_STATUS_1": ACC_OFF}, {"LKA_HUD_2": LANESENSE_ON_GREEN})
     self.assertFalse(CS.cruiseState.enabled)
-
-    # and before the camera has said anything at all, LaneSense counts as off, not on
-    self.setUp()
-    self.assertFalse(self.update(DRIVING, engaged).cruiseState.enabled)
 
   def test_fusion_bus_freshness(self):
     engaged = {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}
@@ -665,15 +692,16 @@ class TestSuswCarController(SuswTestBase):
       sent.append(can_sends)
     return sent
 
-  def test_only_lkas_command_and_heartbeat_are_sent(self):
-    # no cruise button TX and no HUD TX for SUSW, even when the controller asks to cancel and resume.
-    # LKAS_COMMAND on bus 0 every frame, COMMA_HEARTBEAT on bus 1 every 10th frame, nothing else.
+  def test_only_lkas_command_hud_and_heartbeat_are_sent(self):
+    # no cruise button TX for SUSW, even when the controller asks to cancel and resume. LKAS_COMMAND on
+    # bus 0 every frame, LKA_HUD_2 on bus 0 every 25th (4 Hz, #1899), COMMA_HEARTBEAT on bus 1 every
+    # 10th, nothing else.
     for lat_active in (True, False):
       with self.subTest(lat_active=lat_active):
         self.setUp()
         sent = self._run(300, 20., lat_active=lat_active, cancel=True, resume=True)
         for frame, can_sends in enumerate(sent):
-          expected = [(0x1f6, 0)] + ([(0x5f0, 1)] if frame % 10 == 0 else [])
+          expected = [(0x1f6, 0)] + ([(0x5f0, 1)] if frame % 10 == 0 else []) + ([(0x547, 0)] if frame % 25 == 0 else [])
           self.assertEqual(sorted((addr, bus) for addr, _, bus in can_sends), sorted(expected))
 
         heartbeats = [dat for can_sends in sent for addr, dat, _ in can_sends if addr == 0x5f0]
@@ -767,7 +795,7 @@ class TestSuswCarController(SuswTestBase):
     cases = (
       ({"pt": {"ABS_3": BRAKE_PRESSED}}, "brake pressed"),
       ({"adas": {"ACC_STATUS_1": ACC_OFF}}, "ACC dropped"),
-      ({"cam": {"LKA_HUD_2": LANESENSE_OFF}}, "LaneSense off"),
+      ({"pt": {"LANESENSE_BUTTON": LANESENSE_BUTTON_PRESSED}}, "LaneSense button"),
       ({"lat_active": False}, "latActive dropped"),
     )
     for kwargs, label in cases:
@@ -858,6 +886,181 @@ class TestSuswCarController(SuswTestBase):
     return [bool(dat[1] & 0x10) for dat in cls._lkas(sent)]
 
 
+class TestSuswLaneSenseToggle(SuswTestBase):
+  """openpilot's LaneSense toggle (#1899): button edge, persistence seed, first-boot seed."""
+  ENGAGED = {"ACC_HUD": HUD_ENGAGED_60, "ACC_STATUS_1": ACC_ENGAGED, "CRUISE_BUTTONS": BTN_NONE}
+
+  def _button(self, pressed: bool, cam: dict | None = None) -> structs.CarState:
+    return self.update(DRIVING | {"LANESENSE_BUTTON": LANESENSE_BUTTON_PRESSED if pressed else LANESENSE_BUTTON_RELEASED},
+                       self.ENGAGED, cam)
+
+  def test_rising_edge_toggles(self):
+    self.assertTrue(self._button(False).laneSenseOn)
+    # press: off on the press frame itself, and G3 drops at once
+    CS = self._button(True)
+    self.assertFalse(CS.laneSenseOn)
+    self.assertFalse(CS.cruiseState.enabled)
+    # held for 10 s (route 000000d8 had two) and released: still one toggle
+    for _ in range(1000):
+      self.assertFalse(self._button(True).laneSenseOn)
+    self.assertFalse(self._button(False).laneSenseOn)
+    # the next press turns it back on
+    self.assertTrue(self._button(True).laneSenseOn)
+    self.assertTrue(self._button(False).laneSenseOn)
+
+  def test_on_counts_for_g3_once_sent(self):
+    # a press that turns LaneSense on is not G3 until CarController has put it in LKA_HUD_2, because
+    # that frame is what the panda's G3 reads; the controller sends it in the same step
+    self.CI.CS.susw_lanesense_on = False
+    self.CI.CS.susw_lanesense_sent = False
+    self.assertFalse(self._button(False).cruiseState.enabled)
+    CS = self._button(True)
+    self.assertTrue(CS.laneSenseOn)
+    self.assertFalse(CS.cruiseState.enabled)
+    CC = structs.CarControl()
+    _, can_sends = self.CI.apply(CC.as_reader(), self.nanos)
+    hud = [dat for addr, dat, bus in can_sends if addr == 0x547]
+    self.assertEqual([dat.hex() for dat in hud], [CAM_HUD_FRAMES["grey"]])
+    self.assertTrue(self.CI.CS.susw_lanesense_sent)
+    self.assertTrue(self._button(False).cruiseState.enabled)
+
+  def test_first_button_frame_only_primes(self):
+    # a button held through ignition-on or an openpilot restart is not a press
+    self.assertTrue(self._button(True).laneSenseOn)
+    self.assertTrue(self._button(True).laneSenseOn)
+    self.assertTrue(self._button(False).laneSenseOn)
+    self.assertFalse(self._button(True).laneSenseOn)
+    # a step with no new LANESENSE_BUTTON frame keeps the held value: no second toggle
+    self.update(adas=self.ENGAGED)
+    self.assertFalse(self._button(True).laneSenseOn)
+
+  def test_persisted_toggle_ignores_the_camera(self):
+    # card seeded it from the Param: the camera's LANESENSE_DISABLED never moves it, either way
+    for toggle, cam in ((True, LANESENSE_OFF), (False, LANESENSE_ON_GREEN)):
+      with self.subTest(toggle=toggle):
+        self.setUp()
+        self.CI.CS.susw_lanesense_on = toggle
+        for _ in range(100):
+          self.assertEqual(self._button(False, {"LKA_HUD_2": cam}).laneSenseOn, toggle)
+
+  def test_first_boot_seeds_from_the_camera(self):
+    # no Param yet (the first boot after #1899): take over the camera's LaneSense state from its first
+    # LKA_HUD_2, once; until then the toggle is off and presses are ignored
+    for cam, seeded in ((LANESENSE_ON_GREY, True), (LANESENSE_ON_GREEN, True), (LANESENSE_OFF, False)):
+      with self.subTest(cam=cam):
+        self.setUp()
+        self.CI.CS.susw_lanesense_on = None
+        self.CI.CS.susw_lanesense_sent = False
+        self.assertFalse(self._button(False).laneSenseOn)
+        self.assertIsNone(self.CI.CS.susw_lanesense_on)
+        self.assertFalse(self._button(True).laneSenseOn)
+        self.assertIsNone(self.CI.CS.susw_lanesense_on)
+        self._button(False)
+        CS = self._button(False, {"LKA_HUD_2": cam})
+        self.assertEqual(CS.laneSenseOn, seeded)
+        self.assertEqual(self.CI.CS.susw_lanesense_on, seeded)
+        # from then on it is openpilot's: the camera flipping does not move it, a press does
+        other = LANESENSE_OFF if seeded else LANESENSE_ON_GREEN
+        self.assertEqual(self._button(False, {"LKA_HUD_2": other}).laneSenseOn, seeded)
+        self.assertEqual(self._button(True).laneSenseOn, not seeded)
+
+  def test_dbc_bit(self):
+    # LANESENSE_BUTTON is byte 3 bit 6 (DBC 30|1@0+); the rest of byte 3 (low beam, parking brake) is
+    # no press. The other bits of the captured frame are left as recorded.
+    released = bytes.fromhex(LANESENSE_BUTTON_RELEASED)
+    for bit in range(8):
+      with self.subTest(bit=bit):
+        self.setUp()
+        self._button(False)
+        dat = bytearray(released)
+        dat[3] |= 1 << bit
+        CS = self.update(DRIVING | {"LANESENSE_BUTTON": dat.hex()}, self.ENGAGED)
+        self.assertEqual(CS.laneSenseOn, bit != 6)
+
+
+class TestSuswLkaHud(SuswTestBase):
+  """openpilot's LKA_HUD_2 (0x547) toward the cluster (#1899). VEHICLE BUS TX on bus 0."""
+  def _apply(self, lat_active=False, ldw_left=False, ldw_right=False):
+    CC = structs.CarControl()
+    CC.latActive = lat_active
+    CC.hudControl.leftLaneDepart = ldw_left
+    CC.hudControl.rightLaneDepart = ldw_right
+    _, can_sends = self.CI.apply(CC.as_reader(), self.nanos)
+    self.nanos += int(DT_CTRL * 1e9)
+    return [(dat, bus) for addr, dat, bus in can_sends if addr == 0x547]
+
+  def test_frames_match_the_camera(self):
+    # byte for byte the camera's own frames for the same states, so every byte this does not decide
+    # (2, 4, 7, and WARN_BYTE5 = 64 with no warning) is what the cluster always gets
+    cases = (
+      (True, {}, "grey"),
+      (True, {"lat_active": True}, "green"),
+      (True, {"ldw_left": True}, "yellow_left"),
+      (True, {"ldw_right": True}, "yellow_right"),
+      (True, {"lat_active": True, "ldw_left": True}, "yellow_left"),
+      (False, {}, "off"),
+      (False, {"lat_active": True, "ldw_left": True, "ldw_right": True}, "off"),
+    )
+    for toggle, kwargs, frame in cases:
+      with self.subTest(toggle=toggle, **kwargs):
+        self.setUp()
+        self.CI.CS.susw_lanesense_on = toggle
+        sent = self._apply(**kwargs)
+        self.assertEqual([(dat.hex(), bus) for dat, bus in sent], [(CAM_HUD_FRAMES[frame], 0)])
+        self.assertEqual(self.CI.CS.susw_lanesense_sent, toggle)
+
+  def test_warnings_always_clear(self):
+    # no hands-off nag, no departure chime: LKA_WARNING_BITS and WARN_BYTE0/1 zero, WARN_BYTE5 64
+    cp = CANParser("chrysler_susw", [("LKA_HUD_2", 4)], 0)
+    for toggle in (True, False):
+      for lat_active in (True, False):
+        for ldw in ((False, False), (True, False), (False, True)):
+          self.setUp()
+          self.CI.CS.susw_lanesense_on = toggle
+          (dat, bus), = self._apply(lat_active, *ldw)
+          cp.update([(0, [(0x547, dat, bus)])])
+          vl = cp.vl["LKA_HUD_2"]
+          self.assertEqual((vl["LKA_WARNING_BITS"], vl["WARN_BYTE0"], vl["WARN_BYTE1"], vl["WARN_BYTE5"]), (0, 0, 0, 64))
+          self.assertEqual(vl["LANESENSE_DISABLED"], int(not toggle))
+
+  def test_4hz_and_at_once_on_a_change(self):
+    sent = [bool(self._apply()) for _ in range(100)]
+    self.assertEqual([i for i, x in enumerate(sent) if x], [0, 25, 50, 75])
+    # a change goes out on the frame it happens, and the 4 Hz cadence restarts from there
+    for _ in range(10):
+      self._apply()
+    self.CI.CS.susw_lanesense_on = False
+    sent = [self._apply() for _ in range(60)]
+    self.assertEqual([i for i, x in enumerate(sent) if x], [0, 25, 50])
+    self.assertEqual(sent[0][0][0].hex(), CAM_HUD_FRAMES["off"])
+    # icon changes (lateral, LDW) wait for the next 4 Hz frame, like the camera's own
+    self.CI.CS.susw_lanesense_on = True
+    self._apply()
+    self.assertEqual(self._apply(lat_active=True), [])
+
+  def test_nothing_until_the_toggle_is_known(self):
+    # first boot, before the camera's first frame: the camera keeps the cluster
+    self.CI.CS.susw_lanesense_on = None
+    self.CI.CS.susw_lanesense_sent = False
+    self.assertFalse(any(self._apply() for _ in range(100)))
+    self.assertFalse(self.CI.CS.susw_lanesense_sent)
+    self.CI.CS.susw_lanesense_on = True
+    self.assertEqual(self._apply()[0][0].hex(), CAM_HUD_FRAMES["grey"])
+
+  def test_accepted_by_the_panda_and_blocks_the_camera(self):
+    # what the controller sends passes chrysler_susw's TX check, and takes the cluster from the camera
+    safety = libsafety_py.libsafety
+    safety.set_safety_hooks(CarParams.SafetyModel.chryslerSusw, 0)
+    safety.init_tests()
+    safety.set_timer(0)
+    self.assertEqual(safety.safety_fwd_hook(2, 0x547), 0)
+    for toggle in (True, False):
+      self.CI.CS.susw_lanesense_on = toggle
+      (dat, bus), = self._apply()
+      self.assertTrue(safety.safety_tx_hook(make_msg(bus, 0x547, len(dat), dat)))
+    self.assertEqual(safety.safety_fwd_hook(2, 0x547), -1)
+
+
 class TestSuswHandover(SuswTestBase):
   def setUp(self):
     super().setUp()
@@ -869,16 +1072,28 @@ class TestSuswHandover(SuswTestBase):
     self.op_counter_prev = None
     self.accepted_op_counters = []
     self.accepted_op_torques = []
+    # openpilot's LaneSense toggle as the harness drives it with button presses, and whether the
+    # controller has put it on the bus yet (SuswTestBase starts it on and sent)
+    self.toggle = True
+    self.lanesense_sent_prev = True
+    # openpilot has been running: the button edge detector is primed (released), so a first-step press counts
+    self.CI.CS.susw_lanesense_button_prev = False
 
   def _step(self, *, acc_engaged: bool, lanesense_on: bool, lat_active: bool, v_ego: float,
             torque: float = 0., brake: bool = False, force_controls_allowed: bool | None = None,
             expect_accepted: bool = True, check_counter_continuity: bool = True) -> int:
     self.safety.set_timer(self.t_us)
 
+    # lanesense_on is the toggle wanted from this step on; a change is one LaneSense button press
+    press = lanesense_on != self.toggle
+    self.toggle = lanesense_on
+
     # Pack one physical copy of every safety-checked message, then feed those same bytes to both
     # layers. LaneSense goes first so its state is current when the 100 Hz ACC frame evaluates G3.
+    # The camera's LKA_HUD_2 carries what openpilot's own frame put on the bus last step, which is the
+    # panda's view of LaneSense since #1899.
     rx_values = (
-      ("LKA_HUD_2", 2, {"LANESENSE_DISABLED": int(not lanesense_on)}),
+      ("LKA_HUD_2", 2, {"LANESENSE_DISABLED": int(not self.lanesense_sent_prev)}),
       ("ABS_3", 0, {"BRAKE_PEDAL_SWITCH": int(brake)}),
       ("ABS_6", 0, {"VEHICLE_SPEED": v_ego}),
       ("EPS_2", 0, {"DRIVER_TORQUE": 0}),
@@ -894,6 +1109,7 @@ class TestSuswHandover(SuswTestBase):
       packed[name] = dat.hex()
 
     pt = DRIVING | {name: packed[name] for name in ("ABS_3", "ABS_6", "EPS_2", "ACCEL_PEDAL_DRIVER")}
+    pt["LANESENSE_BUTTON"] = LANESENSE_BUTTON_PRESSED if press else LANESENSE_BUTTON_RELEASED
     adas = {
       "ACC_HUD": HUD_ENGAGED_60 if acc_engaged else HUD_READY,
       "ACC_STATUS_1": packed["ACC_STATUS_1"],
@@ -902,9 +1118,12 @@ class TestSuswHandover(SuswTestBase):
     CS = self.update(pt, adas, {"LKA_HUD_2": packed["LKA_HUD_2"]})
     if force_controls_allowed is not None:
       self.safety.set_controls_allowed(force_controls_allowed)
-    expected_controls = (acc_engaged and lanesense_on and not brake) if force_controls_allowed is None else force_controls_allowed
+    # G3 on both sides counts LaneSense on only once openpilot's LKA_HUD_2 has said so on the bus
+    lanesense_g3 = self.lanesense_sent_prev
+    expected_controls = (acc_engaged and lanesense_g3 and not brake) if force_controls_allowed is None else force_controls_allowed
     self.assertEqual(expected_controls, self.safety.get_controls_allowed())
-    self.assertEqual(acc_engaged and lanesense_on, CS.cruiseState.enabled)
+    self.assertEqual(acc_engaged and lanesense_on and lanesense_g3, CS.cruiseState.enabled)
+    self.assertEqual(lanesense_on, CS.laneSenseOn)
 
     CC = structs.CarControl()
     CC.enabled = CS.cruiseState.enabled
@@ -926,6 +1145,7 @@ class TestSuswHandover(SuswTestBase):
           self.accepted_op_torques.append((dat[0] << 3 | dat[1] >> 5) - 1024)
 
     self.assertEqual(accepted_op, int(expect_accepted))
+    self.lanesense_sent_prev = self.CI.CS.susw_lanesense_sent
     stock_forwarded = self.safety.safety_fwd_hook(2, 0x1f6) == 0
     self.t_us += 10000
     return accepted_op + int(stock_forwarded)
@@ -940,10 +1160,24 @@ class TestSuswHandover(SuswTestBase):
     self.assertEqual(off_before + on + off_after, [1] * 90)
 
   def test_lanesense_changes_have_one_sender(self):
+    # the LaneSense button toggles openpilot off, on and off again under an engaged ACC. latActive
+    # follows engagement one frame late, as it does through selfdrived.
     off_before = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
-    on = self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
+    on = [self._step(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)]
+    on += self._phase(acc_engaged=True, lanesense_on=True, lat_active=True, v_ego=20.)
     off_after = self._phase(acc_engaged=True, lanesense_on=False, lat_active=False, v_ego=20.)
-    self.assertEqual(off_before + on + off_after, [1] * 90)
+    self.assertEqual(off_before + on + off_after, [1] * 91)
+
+  def test_lanesense_press_while_steering_is_a_release(self):
+    # a LaneSense press at the torque cap: openpilot drops engagement on the press frame itself and
+    # releases at 60 counts/frame, with latActive still true for that frame; one sender throughout
+    self.assertEqual(self._phase(300, acc_engaged=True, lanesense_on=True, lat_active=True,
+                                 v_ego=20., torque=1.), [1] * 300)
+    self.assertEqual(self.accepted_op_torques[-1], 383)
+    senders = [self._step(acc_engaged=True, lanesense_on=False, lat_active=frame == 0, v_ego=20., torque=1.)
+               for frame in range(10)]
+    self.assertEqual(senders, [1] * 10)
+    self.assertEqual(self.accepted_op_torques[-10:], [323, 263, 203, 143, 83, 23, 0, 0, 0, 0])
 
   def test_lat_active_changes_have_one_sender(self):
     inactive_before = self._phase(acc_engaged=True, lanesense_on=True, lat_active=False, v_ego=20.)
@@ -1132,14 +1366,15 @@ class TestSuswNagPrewarning(unittest.TestCase):
   def test_grey_stretch_counts_through(self):
     # route 0000025f, the un-chimed nag at 256.0 s: 17 grey LKA_HUD_2 frames (4.25 s at 4 Hz) then 10
     # green (2.5 s), torque never above 19. The timer counts from the start of the grey stretch and the
-    # chime fires at SUSW_NAG_CHIME_TIME, still grey, before the car's nag; the green tail does not chime again.
+    # chime fires at SUSW_NAG_CHIME_TIME, still grey (#1899: openpilot's lateral arms it, not the
+    # camera), before the car's nag; the green tail does not chime again.
     torque = [(i * 7) % 39 - 19 for i in range(675)]   # |tq| <= 19, SD ~11: calm
     self.assertLessEqual(max(abs(x) for x in torque), 19)
     grey = self._feed(torque[:425], hud_state=2)
-    self.assertFalse(any(grey))                    # grey counts but never chimes
+    self.assertEqual([i for i, c in enumerate(grey) if c], [self.CHIME_FRAMES - 1])
     self.assertAlmostEqual(self.nag.quiet, 4.25)
     green = self._feed(torque[425:])
-    self.assertEqual([i for i, c in enumerate(green) if c], [0])   # past the chime time: first armed frame
+    self.assertFalse(any(green))
     self.assertAlmostEqual(self.nag.quiet, 6.75)
 
     # and a 2 s grey stretch in the middle of green counts as if it had stayed green
@@ -1147,29 +1382,33 @@ class TestSuswNagPrewarning(unittest.TestCase):
     chimes = self._feed([0] * 100) + self._feed([0] * 200, hud_state=2) + self._feed([0] * 200)
     self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
 
-  def test_grey_counts_but_never_chimes_or_shows_calm(self):
-    # route 00000265 1599-1632 s: 32 s hands-off, grey throughout, no car nag. The timer and SD keep
-    # running raw, but there is no chime and calm (the orange wheel) is False the whole time.
-    self._feed([0] * 100)
-    for _ in range(3200):
-      self.assertFalse(self.nag.update(0, 2, 0, True))
-      self.assertFalse(self.nag.calm)
-    self.assertAlmostEqual(self.nag.quiet, 33.0)
-    self.assertEqual(self.nag.torque_sd, 0.)
-    # re-armed, already past the chime time and calm: chime on the first armed frame, calm shows again
-    self.assertTrue(self._feed([0])[0])
-    self.assertTrue(self.nag.calm)
-    self.assertFalse(any(self._feed([0] * 500)))
+  def test_armed_is_openpilot_lateral_not_the_camera(self):
+    # #1899: the camera's HUD state no longer arms the chime or calm. Grey with openpilot steering
+    # chimes and shows calm exactly like green (route 00000265 1599-1632 s, grey throughout, used to be
+    # silent), and with openpilot not steering nothing counts whatever the camera shows.
+    for hud_state in (2, 12, 16, 20):
+      with self.subTest(hud_state=hud_state):
+        self.setUp()
+        chimes = self._feed([0] * 1000, hud_state=hud_state)
+        self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
+        self.assertTrue(self.nag.calm)
+        self.setUp()
+        chimes = self._feed([0] * 1000, hud_state=hud_state, lat_active=False)
+        self.assertFalse(any(chimes))
+        self.assertFalse(self.nag.calm)
+        self.assertEqual(self.nag.quiet, 0.)
+        self.assertEqual(self.nag.torque_sd, 0.)   # the SD itself still runs
 
   def test_rearm_from_grey_before_the_chime_time(self):
-    # the 2026-10-21 case: 4 s of grey with lanes lost early in a quiet stretch, then green; the timer
-    # accumulated through grey so it chimes at the chime time counted from the start, not from re-arming
+    # the 2026-10-21 case: 1 s of grey with lanes lost early in a quiet stretch, then green; the timer
+    # accumulated through grey so it chimes at the chime time counted from the start of the grey
     chimes = self._feed([0] * 100, hud_state=2) + self._feed([0] * 400)
     self.assertEqual([i for i, c in enumerate(chimes) if c], [self.CHIME_FRAMES - 1])
 
   def test_rearm_from_grey_waits_for_calm(self):
-    # past the chime time in grey, with the hands busy (+-40, under the reset) at the end of it: back in
-    # green the SD is still above 14, so no chime until the wiggle drains out of the window, then once
+    # past the chime time in grey, with the hands busy (+-40, under the reset) from 3 s on: the SD is
+    # above 14 at the chime time, so no chime in grey nor on the first green frame, until the wiggle
+    # drains out of the window, then once
     self._feed([0] * 300 + [40 if i % 2 else -40 for i in range(100)], hud_state=2)
     self.assertGreater(self.nag.torque_sd, SUSW_NAG_SD_CALM)
     chimes = self._feed([0] * 400)
@@ -1318,13 +1557,13 @@ class TestSuswNagPrewarningCarState(SuswTestBase):
     self.assertFalse(states[1].nagPrewarning.calm)   # window not yet full
     self.assertTrue(states[299].nagPrewarning.calm and states[299].nagPrewarning.quiet > 0)
 
-  def test_grey_logs_raw_quiet_but_not_calm(self):
+  def test_grey_chimes_while_openpilot_steers(self):
+    # #1899: armed is openpilot's latActive, so a grey camera chimes like a green one
     states = [self._frame(lat_active=True, hud_state=2) for _ in range(600)]
     self.assertAlmostEqual(states[-1].nagPrewarning.quiet, 5.99, places=5)
     self.assertEqual(states[-1].nagPrewarning.torqueSd, 0.)
-    self.assertFalse(any(CS.nagPrewarning.calm or CS.nagPrewarning.chime for CS in states))
-    CS = self._frame(lat_active=True)
-    self.assertTrue(CS.nagPrewarning.chime and CS.nagPrewarning.calm)
+    self.assertEqual([i for i, CS in enumerate(states) if CS.nagPrewarning.chime], [round(SUSW_NAG_CHIME_TIME / DT_CTRL)])
+    self.assertTrue(states[-1].nagPrewarning.calm)
 
   def test_not_counting_without_lateral_or_outside_state_12(self):
     for kwargs in ({"lat_active": False}, {"lat_active": True, "hud_state": 0},

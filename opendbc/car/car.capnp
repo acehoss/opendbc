@@ -208,6 +208,10 @@ struct CarState {
   # carState rate so every chime and every real nag can be scored offline (Redmine #1854).
   # Default-zero on every other car.
   nagPrewarning @61 :NagPrewarning;
+  # Fork, Chrysler SUSW only: openpilot's own LaneSense toggle (Redmine #1899). The LaneSense button
+  # flips it, it persists across key cycles (Param SuswLaneSenseOn, written by card), and it is the
+  # LaneSense half of the G3 engagement rule. False on every other car.
+  laneSenseOn @62 :Bool;
 
   # cruise state
   cruiseState @10 :CruiseState;
@@ -242,7 +246,7 @@ struct CarState {
   }
 
   struct NagPrewarning {
-    quiet @0 :Float32;     # s since the last reset; counts only while LKA_HUD_STATE 12 and latActive
+    quiet @0 :Float32;     # s since the last reset; counts only while latActive (see nag_prewarn.py)
     torqueSd @1 :Float32;  # rolling SD of EPS_2.DRIVER_TORQUE over SUSW_NAG_SD_WINDOW, counts
     calm @2 :Bool;         # torqueSd < SUSW_NAG_SD_CALM over a full window
     chime @3 :Bool;        # true on the one frame the pre-warning chimes
