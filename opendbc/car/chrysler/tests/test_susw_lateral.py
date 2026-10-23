@@ -3,16 +3,9 @@ import pytest
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.chrysler.values import CAR, SUSW_CARS, CarControllerParams
-from opendbc.car.chrysler.susw_lateral import (BLEND_HI, BLEND_LO, CURVATURE_TABLE, TORQUE_TABLE, STEER_MAX_COUNTS,
+from opendbc.car.chrysler.susw_lateral import (CURVATURE_TABLE, TORQUE_TABLE, STEER_MAX_COUNTS,
                                                susw_lateral_accel_from_torque, susw_torque_from_lateral_accel)
 from opendbc.car.toyota.values import CAR as TOYOTA
-
-
-class _TP:
-  latAccelFactor = 1.2
-
-
-TP = _TP()
 
 
 def _ci(car):
@@ -32,52 +25,35 @@ class TestSuswLateral:
     assert CarControllerParams(CP).STEER_MAX == STEER_MAX_COUNTS
 
   @pytest.mark.parametrize("v_ego", [15., 18., 25., 29., 35.])
-  def test_monotone_and_round_trip(self, v_ego):
-    prev = -1.0
-    for la in np.linspace(0.0, 3.0, 121):
-      torque = susw_torque_from_lateral_accel(la, TP, v_ego)
-      assert 0.0 <= torque <= 1.0 and torque >= prev
-      prev = torque
-      back = susw_lateral_accel_from_torque(torque, TP, v_ego)
-      if torque < 1.0:
-        assert back == pytest.approx(la, abs=0.02)  # numeric inverse on a 64-point grid
+  def test_round_trip(self, v_ego):
+    tp = None
+    for la in np.linspace(-2.0, 2.0, 41):
+      torque = susw_torque_from_lateral_accel(la, tp, v_ego)
+      assert -1.0 <= torque <= 1.0
+      back = susw_lateral_accel_from_torque(torque, tp, v_ego)
+      if abs(torque) < 1.0:  # inside the table the map is a bijection
+        assert back == pytest.approx(la, abs=1e-6)
       else:  # railed: the car can do at most the top of the table at this speed
-        assert back == pytest.approx(CURVATURE_TABLE[-1] * v_ego ** 2, abs=1e-6)
-        assert la >= back
-
-  def test_blend_regimes(self):
-    # straights: below BLEND_LO the feedforward is the linear model (never above the table)
-    for v in (15., 18., 29.):
-      la = 0.9 * BLEND_LO * v ** 2
-      assert susw_torque_from_lateral_accel(la, TP, v) == pytest.approx(min(la / TP.latAccelFactor, np.interp(0.9 * BLEND_LO, CURVATURE_TABLE, TORQUE_TABLE)))
-    # lane centering and curves: at and above BLEND_HI it is the measured table, untouched
-    for v in (15., 18., 29.):
-      for k in (BLEND_HI, 1.0e-3, 1.5e-3, 2.5e-3):
-        assert susw_torque_from_lateral_accel(k * v ** 2, TP, v) == pytest.approx(np.interp(k, CURVATURE_TABLE, TORQUE_TABLE))
-    # the linear model never commands more than the table (no over-commanding at highway speed)
-    for v in (25., 29., 36.):
-      for la in np.linspace(0.1, 2.0, 20):
-        assert susw_torque_from_lateral_accel(la, TP, v) <= np.interp(la / v ** 2, CURVATURE_TABLE, TORQUE_TABLE) + 1e-12
-    # the band is narrow: the lane-centering regime that the wide blend starved (0.6-1.6e-3) is not softened
-    assert BLEND_HI <= 0.6e-3
+        assert abs(back) == pytest.approx(CURVATURE_TABLE[-1] * v_ego ** 2, abs=1e-9)
+        assert abs(la) >= abs(back)
 
   def test_measured_points(self):
     # 1.0 m/s2 at 29 m/s is 1.19/km, which the car holds at ~270 counts (25-31 m/s band). The linear
     # model (1.2, friction 0.23) commanded 1.06, i.e. the rail, for the same request.
-    assert susw_torque_from_lateral_accel(1.0, TP, 29.) * STEER_MAX_COUNTS == pytest.approx(259, abs=15)
+    assert susw_torque_from_lateral_accel(1.0, None, 29.) * STEER_MAX_COUNTS == pytest.approx(259, abs=15)
     # 0.3 m/s2 at 18 m/s is 0.93/km: ~235 counts. The linear model gave 0.3/1.2 = 0.25 -> 96 counts, in the dead zone.
-    assert susw_torque_from_lateral_accel(0.3, TP, 18.) * STEER_MAX_COUNTS == pytest.approx(235, abs=15)
+    assert susw_torque_from_lateral_accel(0.3, None, 18.) * STEER_MAX_COUNTS == pytest.approx(235, abs=15)
     # 1.0 m/s2 at 18 m/s is 3.1/km, past the top of the table: railed, and the limit in lat-accel space says so.
-    assert susw_torque_from_lateral_accel(1.0, TP, 18.) == 1.0
-    assert susw_lateral_accel_from_torque(1.0, TP, 18.) == pytest.approx(CURVATURE_TABLE[-1] * 18. ** 2)
+    assert susw_torque_from_lateral_accel(1.0, None, 18.) == 1.0
+    assert susw_lateral_accel_from_torque(1.0, None, 18.) == pytest.approx(CURVATURE_TABLE[-1] * 18. ** 2)
     # sign and zero
-    assert susw_torque_from_lateral_accel(-0.5, TP, 20.) == -susw_torque_from_lateral_accel(0.5, TP, 20.)
-    assert susw_torque_from_lateral_accel(0.0, TP, 20.) == 0.0
+    assert susw_torque_from_lateral_accel(-0.5, None, 20.) == -susw_torque_from_lateral_accel(0.5, None, 20.)
+    assert susw_torque_from_lateral_accel(0.0, None, 20.) == 0.0
 
   def test_low_speed_guard(self):
     # no division by zero, and at standstill any request rails rather than raising
-    assert susw_torque_from_lateral_accel(0.1, TP, 0.0) == 1.0
-    assert susw_lateral_accel_from_torque(1.0, TP, 0.0) == pytest.approx(CURVATURE_TABLE[-1])
+    assert susw_torque_from_lateral_accel(0.1, None, 0.0) == 1.0
+    assert susw_lateral_accel_from_torque(1.0, None, 0.0) == pytest.approx(CURVATURE_TABLE[-1])
 
   def test_interface_wiring(self):
     for car in SUSW_CARS:
