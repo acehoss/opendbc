@@ -154,10 +154,13 @@ class CarControllerParams:
       # ceiling on 37.6 % of engaged frames of route 00000123 (6754 s, one deliberate intervention),
       # holding the command to 152 of 383 in the worst 5 %; resting hands ran p90 137 / p99.5 208,
       # so ordinary hands-on driving was trimming the assist. At 160 the clamp is active on 4.4 %.
-      # Override authority is still real and measured: the command is forced to zero at
-      # 383 + (160 - d) * 3 = 0, i.e. d ~= 288 counts, against a 360 count peak actually applied on
-      # that drive. The parked lock-to-lock sweep saturates the sensor at 1024.
-      self.STEER_DRIVER_ALLOWANCE = 160
+      # Raised 160 -> 220 on 2026-10-28 (#1879) together with SUSW_STEER_THRESHOLD: resting hands on
+      # the Chicago drives ran p90 154 / p99 220 (40 min hands-on, route 00000284), so the clamp was
+      # trimming the assist on ordinary hands-on driving again. Override authority is still real and
+      # measured: the command is forced to zero at 383 + (220 - d) * 3 = 0, i.e. d ~= 348 counts;
+      # the 43 deliberate inputs on those drives peaked 247-371 (median ~310) and the parked
+      # lock-to-lock sweep saturates the sensor at 1024.
+      self.STEER_DRIVER_ALLOWANCE = 220
       self.STEER_DRIVER_MULTIPLIER = 3
       self.STEER_DRIVER_FACTOR = 1
     else:
@@ -174,10 +177,20 @@ STEER_THRESHOLD = 120
 # p99.5 208, and 16.2 % of engaged frames read as an override that never happened. That matters
 # beyond the UI: steeringPressed freezes the lateral PID integrator and suppresses the
 # steerSaturated alert, so a threshold this low both weakens tracking and hides the warning.
-# 160 is a deliberate first step rather than the ~220 the p99.5 would support - raise further if
-# hands-on driving still reads as override. Driver override AUTHORITY is unchanged: that is
-# STEER_DRIVER_ALLOWANCE, a separate safety parameter, still 80 (AH-161).
-SUSW_STEER_THRESHOLD = 160
+# 160 was the first step. On the 2026-10-24..26 Chicago drives (#1879) the driver rested hands on the
+# wheel for 40 min of route 00000284: |DRIVER_TORQUE| p50 78, p90 154, p99 220 there, 8.3 % of frames
+# read as pressed and the flag flickered 1932 times an hour (steerOverride greys the path, freezes
+# the lateral integrator, aborts a stiction pulse). The 43 deliberate steering inputs across seven
+# routes (held >= 1 s, wheel moved >= 2 deg) peaked at 247-371, median ~310, none under 220. So:
+# pressed sets after SUSW_STEER_PRESSED_FRAMES consecutive frames above SUSW_STEER_THRESHOLD, or
+# at once above SUSW_STEER_THRESHOLD_INSTANT (a yank), and clears below SUSW_STEER_THRESHOLD_RELEASE
+# (hysteresis so a hand hovering at the threshold does not chatter). That leaves ~40 flags an hour
+# on the same hands-on stretch. Driver override AUTHORITY is STEER_DRIVER_ALLOWANCE below, raised to
+# the same 220 in the same change (panda safety chrysler_susw.h, driver_torque_allowance).
+SUSW_STEER_THRESHOLD = 220
+SUSW_STEER_THRESHOLD_RELEASE = 180
+SUSW_STEER_THRESHOLD_INSTANT = 300
+SUSW_STEER_PRESSED_FRAMES = 20   # 0.2 s at the 100 Hz EPS_2 rate
 
 RAM_DT = {CAR.RAM_1500_5TH_GEN, }
 RAM_HD = {CAR.RAM_HD_5TH_GEN, }

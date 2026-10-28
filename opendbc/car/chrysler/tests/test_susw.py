@@ -243,7 +243,7 @@ class TestSuswCarState(SuswTestBase):
     self.assertAlmostEqual(CS.steeringRateDeg, -1.0, places=3)
     self.assertEqual(CS.steeringTorque, -125)      # EPS_2.DRIVER_TORQUE
     self.assertEqual(CS.steeringTorqueEps, -9)     # EPS_2.TORQUE_MOTOR
-    self.assertFalse(CS.steeringPressed)           # |125| < SUSW_STEER_THRESHOLD 160: resting hands
+    self.assertFalse(CS.steeringPressed)           # |125| < SUSW_STEER_THRESHOLD 220: resting hands
     self.assertFalse(CS.steerFaultTemporary)
     self.assertFalse(CS.steerFaultPermanent)
 
@@ -366,6 +366,40 @@ class TestSuswCarState(SuswTestBase):
     self.assertEqual(CS.steeringAngleDeg, 0.)
     self.assertEqual(CS.steeringRateDeg, 0.)
 
+  def test_steering_pressed_debounce(self):
+    # #1879: pressed sets after SUSW_STEER_PRESSED_FRAMES above SUSW_STEER_THRESHOLD, at once above
+    # SUSW_STEER_THRESHOLD_INSTANT, and clears below SUSW_STEER_THRESHOLD_RELEASE (hysteresis)
+    from opendbc.car.chrysler.values import (SUSW_STEER_THRESHOLD, SUSW_STEER_THRESHOLD_RELEASE, SUSW_STEER_THRESHOLD_INSTANT,
+                                             SUSW_STEER_PRESSED_FRAMES)
+    packer = CANPacker("chrysler_susw")
+
+    def eps2(torque):
+      return packer.make_can_msg("EPS_2", 0, {"DRIVER_TORQUE": torque, "TORQUE_MOTOR": 0})[1].hex()
+
+    def press(torque, n=1):
+      for _ in range(n):
+        CS = self.update(DRIVING | {"EPS_2": eps2(torque)})
+      self.assertEqual(CS.steeringTorque, torque)
+      return CS.steeringPressed
+
+    # resting hands just under the threshold never set it, however long
+    self.assertFalse(press(SUSW_STEER_THRESHOLD, 3 * SUSW_STEER_PRESSED_FRAMES))
+    # above it, one frame short of the debounce is not pressed; the next frame is
+    self.assertFalse(press(SUSW_STEER_THRESHOLD + 10, SUSW_STEER_PRESSED_FRAMES - 1))
+    self.assertTrue(press(SUSW_STEER_THRESHOLD + 10))
+    # hysteresis: between release and set it stays pressed, below release it clears at once
+    self.assertTrue(press(SUSW_STEER_THRESHOLD_RELEASE + 5, 5))
+    self.assertFalse(press(SUSW_STEER_THRESHOLD_RELEASE - 5))
+    # a dip below the set level restarts the count
+    self.assertFalse(press(SUSW_STEER_THRESHOLD + 10, SUSW_STEER_PRESSED_FRAMES - 1))
+    self.assertFalse(press(SUSW_STEER_THRESHOLD - 10))
+    self.assertFalse(press(SUSW_STEER_THRESHOLD + 10, SUSW_STEER_PRESSED_FRAMES - 1))
+    # a yank sets it on the first frame, either sign
+    self.assertFalse(press(0))
+    self.assertTrue(press(SUSW_STEER_THRESHOLD_INSTANT + 1))
+    self.assertFalse(press(0))
+    self.assertTrue(press(-(SUSW_STEER_THRESHOLD_INSTANT + 1)))
+
   def test_saturated_driver_torque_is_a_real_measurement(self):
     # -1024 is full right lock, not a sentinel: the parked right-to-lock sweep bottoms out there
     # while the left sweep only reaches +1022. Filtering it would hide the driver's hardest pull.
@@ -375,7 +409,7 @@ class TestSuswCarState(SuswTestBase):
 
     CS = self.update(DRIVING | {"EPS_2": EPS_2_SATURATED})
     self.assertEqual(CS.steeringTorque, -1024)
-    self.assertTrue(CS.steeringPressed)
+    self.assertTrue(CS.steeringPressed)              # above SUSW_STEER_THRESHOLD_INSTANT: no debounce for a yank
     self.assertEqual(CS.steeringTorqueEps, -947)
 
     # and it is what the controller limits against, so full-left torque must not survive it
@@ -830,7 +864,7 @@ class TestSuswCarController(SuswTestBase):
   def test_driver_torque_limiting(self):
     # SUSW limits against DRIVER_TORQUE, so driver torque opposing the command clamps it
     params = CarControllerParams(self.CP)
-    self.assertEqual(params.STEER_DRIVER_ALLOWANCE, 160)
+    self.assertEqual(params.STEER_DRIVER_ALLOWANCE, 220)
     self.assertEqual(params.STEER_DRIVER_MULTIPLIER, 3)
     self.assertEqual(params.STEER_DRIVER_FACTOR, 1)
 

@@ -268,13 +268,15 @@ static bool chrysler_susw_tx_hook(const CANPacket_t *msg) {
     // At 150 a legal ramp was blocked at frame 26 and then latched off, because the violation
     // zeroes desired_torque_last while openpilot keeps climbing.
     .max_rt_delta = 180,
-    // The driver takes the torque away at allowance + max_torque/multiplier = 160 + 383/3 = 288
-    // counts, 1.8x the 160 count hands-on threshold and inside the 360 count peak measured on
-    // route 00000123. Raised from 80 because resting hands (p90 137, p99.5 208) were trimming the
-    // assist on 37.6 % of engaged frames (AH-161). The worst hands-off |DRIVER_TORQUE| seen in
-    // 6740 s of driving is 87, which is below the 160 allowance and costs nothing, so ordinary
-    // road noise cannot wind the assist down on its own.
-    .driver_torque_allowance = 160,
+    // The driver takes the torque away at allowance + max_torque/multiplier = 220 + 383/3 = 348
+    // counts, inside the 247-371 (median ~310) peaks of the 43 deliberate steering inputs on the
+    // 2026-10-24..26 drives (#1879) and the 360 count peak measured on route 00000123. Raised from
+    // 80 because resting hands (p90 137, p99.5 208) were trimming the assist on 37.6 % of engaged
+    // frames (AH-161), then from 160 to 220 because 40 min of hands-on driving on route 00000284
+    // ran p90 154 / p99 220 and was still being trimmed. The worst hands-off |DRIVER_TORQUE| seen
+    // in 6740 s of driving is 87, far below the allowance, so road noise cannot wind the assist
+    // down on its own. The 220 matches SUSW_STEER_THRESHOLD in opendbc/car/chrysler/values.py.
+    .driver_torque_allowance = 220,
     .driver_torque_multiplier = 3,
     // EPS_2.TORQUE_MOTOR is the motor's own output, ~0.23-0.25x the command plus ~0.12x the
     // driver, so |command - TORQUE_MOTOR| runs to 397 on stock camera frames. A motor limited

@@ -1,6 +1,7 @@
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
-from opendbc.car.chrysler.values import CUSW_CARS, DBC, STEER_THRESHOLD, SUSW_STEER_THRESHOLD, RAM_CARS, SUSW_CARS
+from opendbc.car.chrysler.values import (CUSW_CARS, DBC, STEER_THRESHOLD, SUSW_STEER_THRESHOLD, SUSW_STEER_THRESHOLD_RELEASE,
+                                         SUSW_STEER_THRESHOLD_INSTANT, SUSW_STEER_PRESSED_FRAMES, RAM_CARS, SUSW_CARS)
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 
@@ -63,6 +64,8 @@ class CarState(CarStateBase):
     self.susw_button = 0
     self.susw_steering_angle = 0.
     self.susw_steering_rate = 0.
+    self.susw_pressed = False
+    self.susw_pressed_frames = 0
     self.susw_acc_nanos = 0
     self.susw_acc_stale_frames = 0
     self.susw_acc_valid_prev = False
@@ -275,7 +278,16 @@ class CarState(CarStateBase):
     ret.steeringRateDeg = self.susw_steering_rate
     ret.steeringTorque = cp.vl["EPS_2"]["DRIVER_TORQUE"]
     ret.steeringTorqueEps = cp.vl["EPS_2"]["TORQUE_MOTOR"]
-    ret.steeringPressed = abs(ret.steeringTorque) > SUSW_STEER_THRESHOLD
+    # debounced with hysteresis, see SUSW_STEER_THRESHOLD in values.py
+    driver_torque = abs(ret.steeringTorque)
+    if self.susw_pressed:
+      self.susw_pressed = driver_torque > SUSW_STEER_THRESHOLD_RELEASE
+      if not self.susw_pressed:
+        self.susw_pressed_frames = 0
+    else:
+      self.susw_pressed_frames = self.susw_pressed_frames + 1 if driver_torque > SUSW_STEER_THRESHOLD else 0
+      self.susw_pressed = self.susw_pressed_frames >= SUSW_STEER_PRESSED_FRAMES or driver_torque > SUSW_STEER_THRESHOLD_INSTANT
+    ret.steeringPressed = self.susw_pressed
     # EPS_2.LKA_FAULT -> steerFaultTemporary is an EXPLICIT DECISION MADE WITHOUT A POSITIVE SAMPLE,
     # not an accident. The bit is 0 on 100 % of 674k captured frames across every route, so nothing in
     # the data distinguishes a recoverable EPS objection from a latching one, and the temporary vs
