@@ -514,7 +514,7 @@ class TestChryslerSuswSafety(common.CarSafetyTest, common.DriverTorqueSteeringSa
         self.safety.set_timer(int(1.1e6))
         self._op_lanesense(True)
         self._rx_all_checked(skip=quiet)
-        self.safety.safety_tick_current_safety_config()
+        self.safety.safety_tick()
         self.assertEqual(quiet is None, self.safety.safety_config_valid())
         self.assertEqual(quiet is None, self.safety.get_controls_allowed())
 

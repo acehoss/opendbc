@@ -210,7 +210,7 @@ class TestSuswGateway(common.SafetyTest):
     # intercept cannot be torn down by the safety layer going quiet
     for i in range(20):
       self.safety.set_timer(i * 1_000_000)
-      self.safety.safety_tick_current_safety_config()
+      self.safety.safety_tick()
       self.assertEqual(self.safety.safety_fwd_hook(0, 0x103), 2)
       self.assertEqual(self.safety.safety_fwd_hook(2, 0x103), 0)
       self.assertFalse(self.safety.get_controls_allowed())
