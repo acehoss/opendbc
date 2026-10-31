@@ -9,6 +9,7 @@ from opendbc.car.fingerprints import _FINGERPRINTS as ALL_FINGERPRINTS
 from opendbc.car.chrysler.chryslercan import create_comma_heartbeat, create_lkas_command
 from opendbc.car.chrysler.fingerprints import FINGERPRINTS
 from opendbc.car.chrysler.interface import CarInterface
+from opendbc.car.chrysler.values import ChryslerFlags
 from opendbc.car.chrysler.values import CAR, CarControllerParams
 from opendbc.safety.tests.common import CANPackerSafety, make_msg
 from opendbc.safety.tests.libsafety import libsafety_py
@@ -256,7 +257,7 @@ class TestSuswCarState(SuswTestBase):
 
     # documented gaps: no seatbelt signal is decoded and BSM is not on a bus openpilot sees
     self.assertFalse(CS.seatbeltUnlatched)
-    self.assertFalse(self.CP.enableBsm)
+    self.assertFalse(self.CP.flags & ChryslerFlags.HAS_BSM)
 
   def test_brake_and_reverse(self):
     CS = self.update(DRIVING | {"ABS_3": BRAKE_PRESSED, "ENGINE_1": REVERSE, "GEAR_2": GEAR2_R})
