@@ -208,7 +208,7 @@ struct CarState {
   # Fork, Chrysler SUSW only: openpilot's own LaneSense toggle (Redmine #1899). The LaneSense button
   # flips it, it persists across key cycles (Param SuswLaneSenseOn, written by card), and it is the
   # LaneSense half of the G3 engagement rule. False on every other car.
-  laneSenseOn @61 :Bool;
+  laneSenseOn @62 :Bool;
 
   # cruise state
   cruiseState @10 :CruiseState;
